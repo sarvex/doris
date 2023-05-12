@@ -51,11 +51,8 @@ def excludes_from_file(ignore_file):
                 if line.startswith('#'):
                     # ignore comments
                     continue
-                pattern = line.rstrip()
-                if not pattern:
-                    # allow empty lines
-                    continue
-                excludes.append(pattern)
+                if pattern := line.rstrip():
+                    excludes.append(pattern)
     except EnvironmentError as e:
         if e.errno != errno.ENOENT:
             raise
@@ -99,9 +96,11 @@ def make_diff(file, original, reformatted):
         difflib.unified_diff(
             original,
             reformatted,
-            fromfile='{}\t(original)'.format(file),
-            tofile='{}\t(reformatted)'.format(file),
-            n=3))
+            fromfile=f'{file}\t(original)',
+            tofile=f'{file}\t(reformatted)',
+            n=3,
+        )
+    )
 
 
 class DiffError(Exception):
@@ -119,13 +118,11 @@ class UnexpectedError(Exception):
 
 def run_clang_format_diff_wrapper(args, file):
     try:
-        ret = run_clang_format_diff(args, file)
-        return ret
+        return run_clang_format_diff(args, file)
     except DiffError:
         raise
     except Exception as e:
-        raise UnexpectedError('{}: {}: {}'.format(file, e.__class__.__name__,
-                                                  e), e)
+        raise UnexpectedError(f'{file}: {e.__class__.__name__}: {e}', e)
 
 
 def run_clang_format_diff(args, file):
@@ -136,7 +133,7 @@ def run_clang_format_diff(args, file):
         raise DiffError(str(exc))
     invocation = [args.clang_format_executable, file]
     if args.style:
-        invocation.append('-style=' + args.style)
+        invocation.append(f'-style={args.style}')
     if args.inplace:
         invocation.append('-i')
 
@@ -171,9 +168,7 @@ def run_clang_format_diff(args, file):
             **encoding_py3)
     except OSError as exc:
         raise DiffError(
-            "Command '{}' failed to start: {}".format(
-                subprocess.list2cmdline(invocation), exc
-            )
+            f"Command '{subprocess.list2cmdline(invocation)}' failed to start: {exc}"
         )
     proc_stdout = proc.stdout
     proc_stderr = proc.stderr
@@ -189,9 +184,7 @@ def run_clang_format_diff(args, file):
     proc.wait()
     if proc.returncode:
         raise DiffError(
-            "Command '{}' returned non-zero exit status {}".format(
-                subprocess.list2cmdline(invocation), proc.returncode
-            ),
+            f"Command '{subprocess.list2cmdline(invocation)}' returned non-zero exit status {proc.returncode}",
             errs,
         )
     return make_diff(file, original, outs), errs
@@ -240,7 +233,7 @@ def print_trouble(prog, message, use_colors):
     error_text = 'error:'
     if use_colors:
         error_text = bold_red(error_text)
-    print("{}: {} {}".format(prog, error_text, message), file=sys.stderr)
+    print(f"{prog}: {error_text} {message}", file=sys.stderr)
 
 
 def split_list_arg(arg):
@@ -261,9 +254,9 @@ def main():
         default='clang-format')
     parser.add_argument(
         '--extensions',
-        help='comma separated list of file extensions (default: {})'.format(
-            DEFAULT_EXTENSIONS),
-        default=DEFAULT_EXTENSIONS)
+        help=f'comma separated list of file extensions (default: {DEFAULT_EXTENSIONS})',
+        default=DEFAULT_EXTENSIONS,
+    )
     parser.add_argument(
         '-r',
         '--recursive',
@@ -328,7 +321,7 @@ def main():
         colored_stdout = sys.stdout.isatty()
         colored_stderr = sys.stderr.isatty()
 
-    version_invocation = [args.clang_format_executable, str("--version")]
+    version_invocation = [args.clang_format_executable, "--version"]
     try:
         subprocess.check_call(version_invocation, stdout=DEVNULL)
     except subprocess.CalledProcessError as e:
@@ -337,9 +330,7 @@ def main():
     except OSError as e:
         print_trouble(
             parser.prog,
-            "Command '{}' failed to start: {}".format(
-                subprocess.list2cmdline(version_invocation), e
-            ),
+            f"Command '{subprocess.list2cmdline(version_invocation)}' failed to start: {e}",
             use_colors=colored_stderr,
         )
         return ExitStatus.TROUBLE
@@ -360,7 +351,7 @@ def main():
         return ExitStatus.TROUBLE
 
     if not args.quiet:
-      print('Processing %s files: %s' % (len(files), ', '.join(files)))
+        print(f"Processing {len(files)} files: {', '.join(files)}")
 
     njobs = args.j
     if njobs == 0:

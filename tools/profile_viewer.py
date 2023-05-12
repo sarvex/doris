@@ -35,7 +35,7 @@ class Node:
         self.rows = 0
         m = re.search("VNewOlapScanNode\((.*)\)", type)
         if m != None:
-            self.table = m.group(1)
+            self.table = m[1]
             self.type = 'VNewOlapScanNode'
         else:
             self.table = ""
@@ -46,14 +46,15 @@ class Node:
     def parse(self):
         for line in self.data:
             m = re.search(".*RowsReturned:.+\(([\d]+)\)", line)
-            if m!= None:
-                self.rows = int(m.group(1))
-                break
-            else:
+            if m is None:
                 m = re.search(".*RowsReturned:.+([\d]+)", line)
                 if m != None:
-                    self.rows = int(m.group(1))
+                    self.rows = int(m[1])
                     break
+
+            else:
+                self.rows = int(m[1])
+                break
 
     def build_tree(self, nodes):
         if self.type in Node.TERMINAL_NODE_TYPES:
@@ -67,24 +68,24 @@ class Node:
 
     def __repr__(self):
         if self.type == 'VNewOlapScanNode':
-            return "{}_{}".format(self.table, self.id)
-        return "{}_{}".format(self.type, self.id)
+            return f"{self.table}_{self.id}"
+        return f"{self.type}_{self.id}"
 
     def to_label(self):
         name = self.type
         if self.type == 'VNewOlapScanNode':
             name = self.table
-        return '"{}\\n#{}FR{}"'.format(name, self.id, self.frid)
+        return f'"{name}\\n#{self.id}FR{self.frid}"'
 
     def show(self, indent):
-        print("{}{}".format(indent, self))
+        print(f"{indent}{self}")
         for ch in self.children:
-            ch.show("  " + indent)
+            ch.show(f"  {indent}")
 
     def to_dot(self, dot):
-        dot = dot + "\n{}[label={}]".format(self, self.to_label())
+        dot = f"{dot}\n{self}[label={self.to_label()}]"
         for ch in reversed(self.children):
-            dot = dot + "\n{}->{}[label={}]".format(ch, self, ch.rows)
+            dot = f"{dot}\n{ch}->{self}[label={ch.rows}]"
         for ch in self.children:
             dot = ch.to_dot(dot)
         return dot
@@ -113,21 +114,21 @@ class Instance:
             pos = pos + 1
             m = re.search("\s+VDataStreamSender  \(dst_id=(\d+),.*", line)
             if m != None:
-                self.target = m.group(1)
+                self.target = m[1]
                 break
 
         for line in self.data:
             m = re.search("\s+VEXCHANGE_NODE  \(id=(\d+)\):.*", line)
             if m != None:
-                self.srcs.append(m.group(1))
-        
+                self.srcs.append(m[1])
+
         prev = 0
         pos = 0
         for line in self.data:
             m = re.search("\s+([^\s]+N[o|O][d|D][e|E][^\s]*)  \(id=(\d+)\.*", line)
             if m != None:
-                type = m.group(1)
-                id = m.group(2)
+                type = m[1]
+                id = m[2]
                 node = Node(id, type, self.frid)
                 if node.type == 'VEXCHANGE_NODE':
                     exchanges[id] = node
@@ -162,7 +163,7 @@ class Fragment:
     def get_instance_id(self, line):
         m = re.search("\s+Instance  (\w+-\w+)", line)
         is_inst = m != None
-        return (is_inst, m.group(1) if is_inst else "")
+        return is_inst, m[1] if is_inst else ""
 
     def parse(self):
         pos = 1
@@ -172,16 +173,16 @@ class Fragment:
         size = len(self.data)
         prev = pos
         while pos < size - 1:
-            pos = pos + 1
+            pos += 1
             (is_inst, inst_id) = self.get_instance_id(self.data[pos])
             if is_inst:
                 inst.set_data(self.data[prev : pos])
                 inst = Instance(inst_id, self.id)
                 self.instances.append(inst)
                 prev = pos
-            
+
         inst.set_data(self.data[prev : pos])    
-        
+
         for inst in self.instances:
             inst.parse()
         self.srcs = self.instances[0].srcs
@@ -189,9 +190,9 @@ class Fragment:
 
 
     def show(self, indent):
-        print("{}{}".format(indent, self.id))
+        print(f"{indent}{self.id}")
         for fr in self.children:
-            fr.show(indent+"  ")
+            fr.show(f"{indent}  ")
 
     def sum_nodes(self, nodes):
         sum = 0
@@ -210,8 +211,7 @@ class Fragment:
     def to_dot(self):
         inst = self.instances[0]
         dot = ""
-        dot = inst.root.to_dot(dot)
-        return dot
+        return inst.root.to_dot(dot)
 
 class Tree:
     def __init__(self, fragments):
@@ -236,8 +236,7 @@ class Tree:
 
 def load_profile(profile):
     with open(profile, 'r') as f:
-        l = f.readlines()
-        return l
+        return f.readlines()
 
 def get_fragment_id(line):
     #line in format : Fragment /d+:
@@ -263,8 +262,7 @@ def cut_fragment(data):
     fr_id = get_fragment_id(data[pos])
     pos = pos + 1
     current_fr = Fragment(fr_id)
-    fragments = []
-    fragments.append(current_fr)
+    fragments = [current_fr]
     while pos < total_len:
         line = data[pos]
         if is_fragment_begin(line):
@@ -273,7 +271,7 @@ def cut_fragment(data):
             current_fr = Fragment(fr_id)
             fragments.append(current_fr) 
             prev = pos
-            
+
         pos = pos + 1
 
     current_fr.set_data(data[prev: pos - 1])
@@ -297,7 +295,7 @@ if __name__ == '__main__':
         exit(0)
     prf_file = sys.argv[1]
     if not os.path.exists(prf_file):
-        print("{} is not a file".format(prf_file))
+        print(f"{prf_file} is not a file")
         exit(0)
 
     data = load_profile(prf_file)
@@ -308,21 +306,23 @@ if __name__ == '__main__':
     node[shape=rectanble style="rounded,filled" color="lightgoldenrodyellow" ]
     """
     dot_tail = "}"
-    with open(prf_file+".dot", "w") as f:
+    with open(f"{prf_file}.dot", "w") as f:
         f.write(dot_header)
         for fr in fragments:
             # print("fr{}:{} <-{}".format(fr.id, fr.target, fr.srcs))
             fr.zip_instances(fr.instances)
             f.write(fr.to_dot())
             if fr.target != "":
-                f.write("\n{}->{}[label={}]".format(fr.instances[0].root, exchanges[fr.target], fr.instances[0].root.rows))
+                f.write(
+                    f"\n{fr.instances[0].root}->{exchanges[fr.target]}[label={fr.instances[0].root.rows}]"
+                )
         f.write(dot_tail)
-    cmd = "dot {} -T png -o {}".format(prf_file+".dot", prf_file+".png")
+    cmd = f"dot {prf_file}.dot -T png -o {prf_file}.png"
     status = os.system(cmd)
     if status != 0:
         print("convert failed")
     else:
-        print("generate " + prf_file + ".png")
+        print(f"generate {prf_file}.png")
         
 
 

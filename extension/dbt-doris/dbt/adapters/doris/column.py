@@ -27,7 +27,7 @@ from dbt.adapters.base.column import Column
 class DorisColumn(Column):
     @property
     def quoted(self) -> str:
-        return "`{}`".format(self.column)
+        return f"`{self.column}`"
 
     def __repr__(self) -> str:
         return f"<DorisColumn {self.name} ({self.data_type})>"

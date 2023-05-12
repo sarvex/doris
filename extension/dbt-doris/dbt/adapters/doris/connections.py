@@ -95,9 +95,7 @@ class DorisConnectionManager(SQLConnectionManager):
                 connection.state = 'open'
             except mysql.connector.Error as e:
 
-                logger.debug("Got an error when attempting to open a mysql "
-                             "connection: '{}'"
-                             .format(e))
+                logger.debug(f"Got an error when attempting to open a mysql connection: '{e}'")
 
                 connection.handle = None
                 connection.state = 'fail'
@@ -110,16 +108,13 @@ class DorisConnectionManager(SQLConnectionManager):
         return credentials
 
     @classmethod
-    def cancel(self, connection: Connection):
+    def cancel(cls, connection: Connection):
         connection.handle.close()
 
     @classmethod
     def get_response(cls, cursor) -> Union[AdapterResponse, str]:
         code = "SUCCESS"
-        num_rows = 0
-
-        if cursor is not None and cursor.rowcount is not None:
-            num_rows = cursor.rowcount
+        num_rows = 0 if cursor is None or cursor.rowcount is None else cursor.rowcount
         return AdapterResponse(
             code=code,
             _message=f"{num_rows} rows affected",
@@ -140,7 +135,7 @@ class DorisConnectionManager(SQLConnectionManager):
             raise exceptions.RuntimeException(str(e)) from e
 
     @classmethod
-    def begin(self):
+    def begin(cls):
         """
         https://doris.apache.org/docs/data-operate/import/import-scenes/load-atomicity/
         Doris's inserting always transaction, ignore it
@@ -148,5 +143,5 @@ class DorisConnectionManager(SQLConnectionManager):
         pass
 
     @classmethod
-    def commit(self):
+    def commit(cls):
         pass

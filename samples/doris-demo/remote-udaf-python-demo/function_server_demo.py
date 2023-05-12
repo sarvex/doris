@@ -44,11 +44,8 @@ class FunctionServerDemo(function_service_pb2_grpc.PFunctionServiceServicer):
             result_type = types_pb2.PGenericType()
             result_type.id = types_pb2.PGenericType.INT64
             result.type.CopyFrom(result_type)
-            total=0
             size= len(request.args[0].int64_value)
-            for i in range(size):
-                total += request.args[0].int64_value[i]
-    
+            total = sum(request.args[0].int64_value[i] for i in range(size))
             if request.HasField("context"):
                 total += request.context.function_context.args_data[0].int64_value[0]
             result.int64_value.append(total)
@@ -61,12 +58,10 @@ class FunctionServerDemo(function_service_pb2_grpc.PFunctionServiceServicer):
             result_type.id = types_pb2.PGenericType.INT64
             result.type.CopyFrom(result_type)
             args_len = len(request.args)
-            total = 0
-            for i in range(args_len):
-                total += request.args[i].int64_value[0]
+            total = sum(request.args[i].int64_value[0] for i in range(args_len))
             result.int64_value.append(total)
             response.result.append(result)
-        
+
         if request.function_name == "rpc_sum_finalize":
             result = types_pb2.PValues()
             result.has_null = False
@@ -83,11 +78,8 @@ class FunctionServerDemo(function_service_pb2_grpc.PFunctionServiceServicer):
             result_type = types_pb2.PGenericType()
             result_type.id = types_pb2.PGenericType.DOUBLE
             result.type.CopyFrom(result_type)
-            total = 0
             size = len(request.args[0].int32_value)
-            for i in range(size):
-                total += request.args[0].int32_value[i]
-
+            total = sum(request.args[0].int32_value[i] for i in range(size))
             if request.HasField("context"):
                 total += request.context.function_context.args_data[0].double_value[0]
                 size += request.context.function_context.args_data[0].int32_value[0]
@@ -130,7 +122,7 @@ class FunctionServerDemo(function_service_pb2_grpc.PFunctionServiceServicer):
             result_type.id = types_pb2.PGenericType.STRING
             result.type.CopyFrom(result_type)
             size =  len(request.args[0].string_value)
-            currentMap=dict()
+            currentMap = {}
             if request.HasField("context"):
                 context = request.context.function_context.args_data[0].string_value[0]
                 currentMap = json.loads(context)
@@ -159,11 +151,8 @@ class FunctionServerDemo(function_service_pb2_grpc.PFunctionServiceServicer):
             currentMap1 = json.loads(context1)
             context2 = request.args[1].string_value[0]
             currentMap2 = json.loads(context2)
-            for ip,num in  currentMap2.items():
-                if currentMap1.has_key(ip):
-                    currentMap1[ip] = currentMap1[ip] + num
-                else:
-                    currentMap1[ip] = num
+            for ip,num in currentMap2.items():
+                currentMap1[ip] = currentMap1[ip] + num if currentMap1.has_key(ip) else num
             json_dict = json.dumps(currentMap1)
             result.string_value.append(json_dict)
             response.result.append(result)
@@ -177,16 +166,16 @@ class FunctionServerDemo(function_service_pb2_grpc.PFunctionServiceServicer):
 
             context = request.context.function_context.args_data[0].string_value[0]
             currentMap = json.loads(context)
-            sortedMap=sorted(currentMap.items(), key = lambda kv:(kv[1], kv[0]),reverse=True) 
-            resultMap=dict()
+            sortedMap=sorted(currentMap.items(), key = lambda kv:(kv[1], kv[0]),reverse=True)
+            resultMap = {}
             topN=3
             if len(sortedMap) < topN:
                 topN = len(sortedMap)
             finalResult=""
             print(sortedMap)
-            for i in  range(topN):
+            for i in range(topN):
                 ip=sortedMap[i][0]
-                finalResult +=ip +":"+str(sortedMap[i][1]) +" "
+                finalResult += f"{ip}:{str(sortedMap[i][1])} "
             result.string_value.append(finalResult)
             response.result.append(result)
         return response
@@ -211,7 +200,7 @@ class FunctionServerDemo(function_service_pb2_grpc.PFunctionServiceServicer):
 def serve(port):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     function_service_pb2_grpc.add_PFunctionServiceServicer_to_server(FunctionServerDemo(), server)
-    server.add_insecure_port("0.0.0.0:%s" % port)
+    server.add_insecure_port(f"0.0.0.0:{port}")
     server.start()
     while True:
         time.sleep(1)
@@ -219,7 +208,5 @@ def serve(port):
 
 if __name__ == '__main__':
     logging.basicConfig()
-    port = 9000
-    if len(sys.argv) > 1:
-        port = sys.argv[1]
+    port = sys.argv[1] if len(sys.argv) > 1 else 9000
     serve(port)

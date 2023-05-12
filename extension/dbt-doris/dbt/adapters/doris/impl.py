@@ -82,13 +82,12 @@ class DorisAdapter(SQLAdapter):
         return "string"
 
     def quote(self, identifier):
-        return "`{}`".format(identifier)
+        return f"`{identifier}`"
 
     def check_schema_exists(self, database, schema):
         results = self.execute_macro(LIST_SCHEMAS_MACRO_NAME, kwargs={"database": database})
 
-        exists = True if schema in [row[0] for row in results] else False
-        return exists
+        return schema in [row[0] for row in results]
 
     def get_relation(self, database: Optional[str], schema: str, identifier: str):
         if not self.Relation.include_policy.database:
@@ -130,21 +129,21 @@ class DorisAdapter(SQLAdapter):
 
     def get_catalog(self, manifest):
         schema_map = self._get_catalog_schemas(manifest)
-        
+
         with executor(self.config) as tpe:
             futures: List[Future[agate.Table]] = []
             for info, schemas in schema_map.items():
-                for schema in schemas:
-                    futures.append(
-                        tpe.submit_connected(
-                            self,
-                            schema,
-                            self._get_one_catalog,
-                            info,
-                            [schema],
-                            manifest,
-                        )
+                futures.extend(
+                    tpe.submit_connected(
+                        self,
+                        schema,
+                        self._get_one_catalog,
+                        info,
+                        [schema],
+                        manifest,
                     )
+                    for schema in schemas
+                )
             catalogs, exceptions = catch_as_completed(futures)
         return catalogs, exceptions
 

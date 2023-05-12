@@ -73,7 +73,5 @@ def serve(port):
 
 if __name__ == '__main__':
     logging.basicConfig()
-    port = 9000
-    if len(sys.argv) > 1:
-        port = sys.argv[1]
+    port = sys.argv[1] if len(sys.argv) > 1 else 9000
     serve(port)

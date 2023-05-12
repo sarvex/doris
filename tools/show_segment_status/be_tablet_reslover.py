@@ -61,15 +61,16 @@ class BeTabletResolver:
         return
 
     def _make_url(self, be, tablet):
-        url_list = []
-        url_list.append("http://")
-        url_list.append(be["ip"])
-        url_list.append(":")
-        url_list.append(be["http_port"])
-        url_list.append("/api/meta/header/")
-        url_list.append(str(tablet["tablet_id"]))
-        url_list.append("/")
-        url_list.append(str(tablet["schema_hash"]))
+        url_list = [
+            "http://",
+            be["ip"],
+            ":",
+            be["http_port"],
+            "/api/meta/header/",
+            str(tablet["tablet_id"]),
+            "/",
+            str(tablet["schema_hash"]),
+        ]
         return "".join(url_list)
 
     def _fetch_tablet_meta_by_id(self, url):
@@ -86,14 +87,12 @@ class BeTabletResolver:
 
         rowsets = []
         for rs_meta in rs_metas:
-            rowset = {}
-            rowset['tablet_id'] = rs_meta['tablet_id']
-            rowset['num_rows'] = rs_meta['num_rows']
-            rowset['data_disk_size'] = rs_meta['data_disk_size']
-            if rs_meta['rowset_type'] == 'BETA_ROWSET':
-                rowset['is_beta'] = True
-            else:
-                rowset['is_beta'] = False
+            rowset = {
+                'tablet_id': rs_meta['tablet_id'],
+                'num_rows': rs_meta['num_rows'],
+                'data_disk_size': rs_meta['data_disk_size'],
+                'is_beta': rs_meta['rowset_type'] == 'BETA_ROWSET',
+            }
             rowsets.append(rowset);
 
         self.tablet_infos[rs_meta['tablet_id']] = rowsets

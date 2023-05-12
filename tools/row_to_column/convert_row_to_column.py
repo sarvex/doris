@@ -41,7 +41,7 @@ class convert_row_to_column(object):
                                       passwd=self.passwd)
             self.cur = self.db.cursor()
         except MySQLdb.Error as e:
-            print ("error %s:%s" % (str(e.args[0]), e.args[1]))
+            print(f"error {str(e.args[0])}:{e.args[1]}")
     
     def close(self):
         if self.db.open:

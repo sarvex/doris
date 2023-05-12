@@ -84,22 +84,16 @@ def add_function(fn_meta_data, user_visible):
     """
     assert len(fn_meta_data) >= 4, \
             "Invalid function entry in doris_builtins_functions.py:\n\t" + repr(fn_meta_data)
-    entry = {}
-    entry["sql_names"] = fn_meta_data[0]
-    entry["ret_type"] = fn_meta_data[1]
-    entry["args"] = fn_meta_data[2]
-    if fn_meta_data[3] != '':
-        entry['nullable_mode'] = fn_meta_data[3]
-    else:
-        entry['nullable_mode'] = 'DEPEND_ON_ARGUMENT'
-
-    # process template
-    if len(fn_meta_data) >= 5:
-        entry["template_types"] = fn_meta_data[4]
-    else:
-        entry["template_types"] = []
-
-    entry["user_visible"] = user_visible
+    entry = {
+        "sql_names": fn_meta_data[0],
+        "ret_type": fn_meta_data[1],
+        "args": fn_meta_data[2],
+        'nullable_mode': fn_meta_data[3]
+        if fn_meta_data[3] != ''
+        else 'DEPEND_ON_ARGUMENT',
+        "template_types": fn_meta_data[4] if len(fn_meta_data) >= 5 else [],
+        "user_visible": user_visible,
+    }
     meta_data_entries.append(entry)
 
 
@@ -121,7 +115,7 @@ def generate_fe_datatype(str_type, template_types):
     # process template
     if str_type in template_types:
         return 'new TemplateType("{0}")'.format(str_type)
-    elif str_type + "..." in template_types:
+    elif f"{str_type}..." in template_types:
         return 'new TemplateType("{0}", true)'.format(str_type)
 
     # process Array, Map, Struct template
@@ -139,27 +133,25 @@ def generate_fe_datatype(str_type, template_types):
             types = template.split(',')
             field_str = generate_fe_datatype(types[0], template_types)
             for i in range(1, len(types)):
-                field_str += ", " + generate_fe_datatype(types[i], template_types)
+                field_str += f", {generate_fe_datatype(types[i], template_types)}"
             return 'new StructType({0})'.format(field_str)
 
     # lagacy Array, Map syntax
     if str_type.startswith("ARRAY_"):
         vec_type = str_type.split('_', 1);
         if len(vec_type) > 1 and vec_type[0] == "ARRAY":
-            return "new ArrayType(" + generate_fe_datatype(vec_type[1], template_types) + ")"
+            return f"new ArrayType({generate_fe_datatype(vec_type[1], template_types)})"
     if str_type.startswith("MAP_"):
         vec_type = str_type.split('_', 2)
         if len(vec_type) > 2 and vec_type[0] == "MAP": 
-            return "new MapType(" + generate_fe_datatype(vec_type[1], template_types) + "," + generate_fe_datatype(vec_type[2], template_types)+")"
+            return f"new MapType({generate_fe_datatype(vec_type[1], template_types)},{generate_fe_datatype(vec_type[2], template_types)})"
     if str_type == "DECIMALV2":
         return "Type.MAX_DECIMALV2_TYPE"
     if str_type == "DECIMAL32":
         return "Type.DECIMAL32"
     if str_type == "DECIMAL64":
         return "Type.DECIMAL64"
-    if str_type == "DECIMAL128":
-        return "Type.DECIMAL128"
-    return "Type." + str_type
+    return "Type.DECIMAL128" if str_type == "DECIMAL128" else f"Type.{str_type}"
 
 """
 Order of params:
@@ -170,10 +162,7 @@ def generate_fe_entry(entry, name):
     """
     java_output = ""
     java_output += "\"" + name + "\""
-    if entry["user_visible"]:
-        java_output += ", true"
-    else:
-        java_output += ", false"
+    java_output += ", true" if entry["user_visible"] else ", false"
     java_output += ", Function.NullableMode." + entry["nullable_mode"]
     java_output += ", " + generate_fe_datatype(entry["ret_type"], entry["template_types"])
 
@@ -191,44 +180,41 @@ def generate_fe_entry(entry, name):
 def generate_fe_registry_init(filename):
     """add function
     """
-    java_registry_file = open(filename, "w")
-    java_registry_file.write(java_registry_preamble)
+    with open(filename, "w") as java_registry_file:
+        java_registry_file.write(java_registry_preamble)
 
-    for entry in meta_data_entries:
-        for name in entry["sql_names"]:
-            java_output = generate_fe_entry(entry, name)
-            java_registry_file.write("        functionSet.addScalarAndVectorizedBuiltin(%s);\n" % java_output)
+        for entry in meta_data_entries:
+            for name in entry["sql_names"]:
+                java_output = generate_fe_entry(entry, name)
+                java_registry_file.write("        functionSet.addScalarAndVectorizedBuiltin(%s);\n" % java_output)
 
-    java_registry_file.write("\n")
+        java_registry_file.write("\n")
 
-    # add non_null_result_with_null_param_functions
-    java_registry_file.write("        Set<String> funcNames = Sets.newHashSet();\n")
-    for entry in doris_builtins_functions.null_result_with_one_null_param_functions:
-        java_registry_file.write("        funcNames.add(\"%s\");\n" % entry)
-    java_registry_file.write("        functionSet.buildNullResultWithOneNullParamFunction(funcNames);\n");
+        # add non_null_result_with_null_param_functions
+        java_registry_file.write("        Set<String> funcNames = Sets.newHashSet();\n")
+        for entry in doris_builtins_functions.null_result_with_one_null_param_functions:
+            java_registry_file.write("        funcNames.add(\"%s\");\n" % entry)
+        java_registry_file.write("        functionSet.buildNullResultWithOneNullParamFunction(funcNames);\n");
 
-    # add nondeterministic functions
-    java_registry_file.write("        Set<String> nondeterministicFuncNames = Sets.newHashSet();\n")
-    for entry in doris_builtins_functions.nondeterministic_functions:
-        java_registry_file.write("        nondeterministicFuncNames.add(\"%s\");\n" % entry)
-    java_registry_file.write("        functionSet.buildNondeterministicFunctions(nondeterministicFuncNames);\n");
+        # add nondeterministic functions
+        java_registry_file.write("        Set<String> nondeterministicFuncNames = Sets.newHashSet();\n")
+        for entry in doris_builtins_functions.nondeterministic_functions:
+            java_registry_file.write("        nondeterministicFuncNames.add(\"%s\");\n" % entry)
+        java_registry_file.write("        functionSet.buildNondeterministicFunctions(nondeterministicFuncNames);\n");
 
-    java_registry_file.write("        funcNames = Sets.newHashSet();\n")
-    for entry in doris_builtins_functions.null_result_with_one_null_param_functions:
-        java_registry_file.write("        funcNames.add(\"%s\");\n" % entry)
-    java_registry_file.write("        functionSet.buildNullResultWithOneNullParamFunction(funcNames);\n");
+        java_registry_file.write("        funcNames = Sets.newHashSet();\n")
+        for entry in doris_builtins_functions.null_result_with_one_null_param_functions:
+            java_registry_file.write("        funcNames.add(\"%s\");\n" % entry)
+        java_registry_file.write("        functionSet.buildNullResultWithOneNullParamFunction(funcNames);\n");
 
-    java_registry_file.write(java_registry_epilogue)
-    java_registry_file.close()
+        java_registry_file.write(java_registry_epilogue)
 
 if __name__ == "__main__":
 
     try:
         os.makedirs(FE_PATH)
     except OSError as e:
-        if e.errno == errno.EEXIST:
-            pass
-        else:
+        if e.errno != errno.EEXIST:
             raise
 
     # Read the function metadata inputs
@@ -237,4 +223,4 @@ if __name__ == "__main__":
     for function in doris_builtins_functions.invisible_functions:
         add_function(function, False)
 
-    generate_fe_registry_init(FE_PATH + "ScalarBuiltins.java")
+    generate_fe_registry_init(f"{FE_PATH}ScalarBuiltins.java")

@@ -61,14 +61,14 @@ class FeMetaResolver:
                                       passwd=self.query_pwd)
             self.cur = self.db.cursor()
         except MySQLdb.Error as e:
-            print ("Failed to connect fe server. error %s:%s" % (str(e.args[0]), e.args[1]))
+            print(f"Failed to connect fe server. error {str(e.args[0])}:{e.args[1]}")
             exit(-1);
 
     def exec_sql(self, sql):
         try:
             self.cur.execute(sql)
         except MySQLdb.Error as e:
-            print ("exec sql error %s:%s" % (str(e.args[0]), e.args[1]))
+            print(f"exec sql error {str(e.args[0])}:{e.args[1]}")
             exit(-1);
 
     def close(self):
@@ -80,9 +80,8 @@ class FeMetaResolver:
         show_be_sql = "show backends"
         self.exec_sql(show_be_sql);
         be_list = self.cur.fetchall()
-        for be_tuple in be_list :
-            be = {}
-            be['be_id'] = long(be_tuple[0])
+        for be_tuple in be_list:
+            be = {'be_id': long(be_tuple[0])}
             be['ip'] = be_tuple[2]
             be['http_port'] = be_tuple[5]
             self.be_list.append(be)
@@ -93,11 +92,10 @@ class FeMetaResolver:
         show_database_sql = "show proc \"/dbs\" "
         self.exec_sql(show_database_sql);
         db_list = self.cur.fetchall()
-        for db_tuple in db_list :
-            db = {}
+        for db_tuple in db_list:
             if long(db_tuple[0]) <= 0:
                 continue
-            db['db_id'] = long(db_tuple[0])
+            db = {'db_id': long(db_tuple[0])}
             db['db_name'] = db_tuple[1]
             self.db_list.append(db)
 
@@ -109,12 +107,13 @@ class FeMetaResolver:
         sql = "show proc \"/dbs/%s\" " % db['db_id']
         self.exec_sql(sql);
         table_list = self.cur.fetchall()
-        for table_tuple in table_list :
+        for table_tuple in table_list:
             if table_tuple[6] == "OLAP":
-                table = {}
-                table['db_id'] = db['db_id'] 
-                table['db_name'] = db['db_name'] 
-                table['tbl_id'] = long(table_tuple[0])
+                table = {
+                    'db_id': db['db_id'],
+                    'db_name': db['db_name'],
+                    'tbl_id': long(table_tuple[0]),
+                }
                 table['tbl_name'] = table_tuple[1]
                 self.table_list.append(table)
         return
@@ -127,11 +126,12 @@ class FeMetaResolver:
         sql = "show proc \"/dbs/%s/%s/index_schema\" " % (table['db_id'], table['tbl_id'])
         self.exec_sql(sql);
         index_list = self.cur.fetchall()
-        for index_tuple in index_list :
-            index = {}
-            index['tbl_id'] = table['tbl_id'] 
-            index['tbl_name'] = table['tbl_name'] 
-            index['idx_id'] = long(index_tuple[0])
+        for index_tuple in index_list:
+            index = {
+                'tbl_id': table['tbl_id'],
+                'tbl_name': table['tbl_name'],
+                'idx_id': long(index_tuple[0]),
+            }
             index['schema_hash'] = long(index_tuple[3])
             self.rollup_map[index['idx_id']] = index
         return
@@ -144,13 +144,14 @@ class FeMetaResolver:
         sql = "show proc \"/dbs/%s/%s/partitions\" " % (table['db_id'], table['tbl_id'])
         self.exec_sql(sql);
         partition_list = self.cur.fetchall()
-        for partition_tuple in partition_list :
-            partition = {}
-            partition['db_id'] = table['db_id'] 
-            partition['db_name'] = table['db_name'] 
-            partition['tbl_id'] = table['tbl_id'] 
-            partition['tbl_name'] = table['tbl_name'] 
-            partition['partition_id'] = long(partition_tuple[0])
+        for partition_tuple in partition_list:
+            partition = {
+                'db_id': table['db_id'],
+                'db_name': table['db_name'],
+                'tbl_id': table['tbl_id'],
+                'tbl_name': table['tbl_name'],
+                'partition_id': long(partition_tuple[0]),
+            }
             partition['partition_name'] = partition_tuple[1]
             self.partition_list.append(partition)
         return
@@ -161,18 +162,19 @@ class FeMetaResolver:
 
     def _fetch_idxes_by_partition(self, partition):
         sql = "show proc \"/dbs/%s/%s/partitions/%s\" " % \
-                (partition['db_id'], partition['tbl_id'], partition['partition_id'])
+                    (partition['db_id'], partition['tbl_id'], partition['partition_id'])
         self.exec_sql(sql);
         index_list = self.cur.fetchall()
-        for idx_tuple in index_list :
-            idx = {}
-            idx['db_id'] = partition['db_id'] 
-            idx['db_name'] = partition['db_name'] 
-            idx['tbl_id'] = partition['tbl_id'] 
-            idx['tbl_name'] = partition['tbl_name'] 
-            idx['partition_id'] = partition['partition_id']
-            idx['partition_name'] = partition['partition_name']
-            idx['idx_id'] = long(idx_tuple[0])
+        for idx_tuple in index_list:
+            idx = {
+                'db_id': partition['db_id'],
+                'db_name': partition['db_name'],
+                'tbl_id': partition['tbl_id'],
+                'tbl_name': partition['tbl_name'],
+                'partition_id': partition['partition_id'],
+                'partition_name': partition['partition_name'],
+                'idx_id': long(idx_tuple[0]),
+            }
             idx['idx_name'] = idx_tuple[1]
             idx['idx_state'] = idx_tuple[2]
             self.index_list.append(idx)
@@ -190,21 +192,22 @@ class FeMetaResolver:
 
     def _fetch_tablets_by_index(self, index):
         sql = "show proc \"/dbs/%s/%s/partitions/%s/%s\" " % \
-                (index['db_id'], index['tbl_id'], index['partition_id'], index['idx_id'])
+                    (index['db_id'], index['tbl_id'], index['partition_id'], index['idx_id'])
         self.exec_sql(sql);
         tablet_list = self.cur.fetchall()
-        for tablet_tuple in tablet_list :
-            tablet = {}
-            tablet['db_id'] = index['db_id'] 
-            tablet['db_name'] = index['db_name'] 
-            tablet['tbl_id'] = index['tbl_id'] 
-            tablet['tbl_name'] = index['tbl_name'] 
-            tablet['partition_id'] = index['partition_id']
-            tablet['partition_name'] = index['partition_name']
-            tablet['idx_id'] = index['idx_id']
-            tablet['idx_name'] = index['idx_name'] 
-            tablet['idx_state'] = index['idx_state']
-            tablet['tablet_id'] = long(tablet_tuple[0])
+        for tablet_tuple in tablet_list:
+            tablet = {
+                'db_id': index['db_id'],
+                'db_name': index['db_name'],
+                'tbl_id': index['tbl_id'],
+                'tbl_name': index['tbl_name'],
+                'partition_id': index['partition_id'],
+                'partition_name': index['partition_name'],
+                'idx_id': index['idx_id'],
+                'idx_name': index['idx_name'],
+                'idx_state': index['idx_state'],
+                'tablet_id': long(tablet_tuple[0]),
+            }
             tablet['replica_id'] = long(tablet_tuple[1])
             tablet['be_id'] = long(tablet_tuple[2])
             tablet['schema_hash'] = index["schema_hash"]

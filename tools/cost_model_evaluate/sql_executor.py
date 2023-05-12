@@ -38,8 +38,7 @@ class SQLExecutor:
             self.cursor.execute(query, parameters)
         else:
             self.cursor.execute(query)
-        results = self.cursor.fetchall()
-        return results
+        return self.cursor.fetchall()
 
     def get_execute_time(self, query: str) -> float:
         self.execute_query(query, None)
@@ -52,19 +51,19 @@ class SQLExecutor:
             raise Exception(f"invalid time {t}")
         n = 0
 
-        h = res.group(1)
+        h = res[1]
         if h is not None:
             n += int(h.replace("h", "")) * 60 * 60 * 1000
-        min = res.group(2)
+        min = res[2]
         if min is not None != 0:
             n += int(min.replace("min", "")) * 60 * 1000
-        s = res.group(3)
+        s = res[3]
         if s is not None != 0:
             n += int(s.replace("s", "")) * 1000
-        ms = res.group(4)
+        ms = res[4]
         if len(ms) != 0:
             n += int(ms.replace("ms", ""))
-        
+
         return n
 
     def execute_many_queries(self, queries: List[Tuple[str, Tuple]]) -> List[List[Tuple]]:

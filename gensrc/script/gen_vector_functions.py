@@ -465,18 +465,19 @@ def initialize_sub(op, return_type, arg_types):
     Expand the signature data for template substitution.  Returns
     a dictionary with all the entries for all the templates used in this script
     """
-    sub = {}
-    sub["fn_name"] = op
-    sub["fn_signature"] = op
-    sub["return_type"] = return_type
-    sub["args"] = ""
+    sub = {
+        "fn_name": op,
+        "fn_signature": op,
+        "return_type": return_type,
+        "args": "",
+    }
     if op in native_ops:
         sub["native_op"] = native_ops[op]
     for idx in range(0, len(arg_types)):
         arg = arg_types[idx]
-        sub["fn_signature"] += "_" + native_types[arg]
-        sub["native_type" + repr(idx + 1)] = implemented_types[arg]
-        sub["args"] += "'" + arg + "', "
+        sub["fn_signature"] += f"_{native_types[arg]}"
+        sub[f"native_type{repr(idx + 1)}"] = implemented_types[arg]
+        sub["args"] += f"'{arg}', "
     return sub
 
 if __name__ == "__main__":
@@ -484,85 +485,75 @@ if __name__ == "__main__":
     try:
         os.makedirs(BE_PATH)
     except OSError as e:
-        if e.errno == errno.EEXIST:
-            pass
-        else:
+        if e.errno != errno.EEXIST:
             raise
 
-    h_file = open(BE_PATH + 'vector-functions.h', 'w')
-    cc_file = open(BE_PATH + 'vector-functions.cc', 'w')
-    python_file = open('generated_vector_functions.py', 'w')
-    h_file.write(h_preamble)
-    cc_file.write(cc_preamble)
-    python_file.write(python_preamble)
+    with open(f'{BE_PATH}vector-functions.h', 'w') as h_file:
+        cc_file = open(f'{BE_PATH}vector-functions.cc', 'w')
+        python_file = open('generated_vector_functions.py', 'w')
+        h_file.write(h_preamble)
+        cc_file.write(cc_preamble)
+        python_file.write(python_preamble)
 
-    # Generate functions and headers
-    for func_data in functions:
-        op = func_data[0]
-        # If a specific template has been specified, use that one.
-        if len(func_data) >= 4:
-            template = func_data[3]
-        else:
-            # Skip functions with no template (shouldn't be auto-generated)
-            if not op in templates:
+            # Generate functions and headers
+        for func_data in functions:
+            op = func_data[0]
+                    # If a specific template has been specified, use that one.
+            if len(func_data) >= 4:
+                template = func_data[3]
+            elif op in templates:
+                template = templates[op]
+
+            else:
                 continue
-            template = templates[op]
+            # Expand all arguments
+            return_types = []
+            for ret in func_data[1]:
+                return_types.extend(iter(types[ret]))
+            signatures = []
+            for args in func_data[2]:
+                expanded_arg = []
+                for arg in args:
+                    expanded_arg.extend(iter(types[arg]))
+                signatures.append(expanded_arg)
 
-        # Expand all arguments
-        return_types = []
-        for ret in func_data[1]:
-            for t in types[ret]:
-                return_types.append(t)
-        signatures = []
-        for args in func_data[2]:
-            expanded_arg = []
-            for arg in args:
-                for t in types[arg]:
-                    expanded_arg.append(t)
-            signatures.append(expanded_arg)
+            # Put arguments into substitution structure
+            num_functions = 0
+            for args in signatures:
+                num_functions = max(num_functions, len(args))
+            num_functions = max(num_functions, len(return_types))
+            num_args = len(signatures)
 
-        # Put arguments into substitution structure
-        num_functions = 0
-        for args in signatures:
-            num_functions = max(num_functions, len(args))
-        num_functions = max(num_functions, len(return_types))
-        num_args = len(signatures)
-
-        # Validate the input is correct
-        if len(return_types) != 1 and len(return_types) != num_functions:
-            print("Invalid Declaration: " + func_data)
-            sys.exit(1)
-
-        for args in signatures:
-            if len(args) != 1 and len(args) != num_functions:
-                print("Invalid Declaration: " + func_data)
+                    # Validate the input is correct
+            if len(return_types) not in [1, num_functions]:
+                print(f"Invalid Declaration: {func_data}")
                 sys.exit(1)
 
-        # Iterate over every function signature to generate
-        for i in range(0, num_functions):
-            if len(return_types) == 1:
-                return_type = return_types[0]
-            else:
-                return_type = return_types[i]
+            for args in signatures:
+                if len(args) not in [1, num_functions]:
+                    print(f"Invalid Declaration: {func_data}")
+                    sys.exit(1)
 
-            arg_types = []
-            for j in range(0, num_args):
-                if len(signatures[j]) == 1:
-                    arg_types.append(signatures[j][0])
-                else:
-                    arg_types.append(signatures[j][i])
+                    # Iterate over every function signature to generate
+            for i in range(0, num_functions):
+                return_type = return_types[0] if len(return_types) == 1 else return_types[i]
+                arg_types = []
+                for j in range(0, num_args):
+                    if len(signatures[j]) == 1:
+                        arg_types.append(signatures[j][0])
+                    else:
+                        arg_types.append(signatures[j][i])
 
-            # At this point, 'return_type' is a single type and 'arg_types'
-            # is a list of single types
-            sub = initialize_sub(op, return_type, arg_types)
+                # At this point, 'return_type' is a single type and 'arg_types'
+                # is a list of single types
+                sub = initialize_sub(op, return_type, arg_types)
 
-            h_file.write(header_template.substitute(sub))
-            cc_file.write(template.substitute(sub))
-            python_file.write(python_template.substitute(sub))
+                h_file.write(header_template.substitute(sub))
+                cc_file.write(template.substitute(sub))
+                python_file.write(python_template.substitute(sub))
 
-    h_file.write(h_epilogue)
-    cc_file.write(cc_epilogue)
-    python_file.write(python_epilogue)
-    h_file.close()
+        h_file.write(h_epilogue)
+        cc_file.write(cc_epilogue)
+        python_file.write(python_epilogue)
     cc_file.close()
     python_file.close()

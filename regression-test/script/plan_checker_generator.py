@@ -60,7 +60,10 @@ sql_files = [f for f in os.listdir(sql_dir) if os.path.isfile(os.path.join(sql_d
 
 sql_numbers = [re.findall(r'\d+', f)[0] for f in sql_files]
 
-output_files = [os.path.join(output_dir, 'test_'+x[1] + '.groovy') for x in zip(sql_files, sql_numbers)]
+output_files = [
+    os.path.join(output_dir, f'test_{x[1]}.groovy')
+    for x in zip(sql_files, sql_numbers)
+]
 
 sql_files_path = [os.path.join(sql_dir, p) for p in sql_files]
 
@@ -84,29 +87,46 @@ patterns = [
     'predicates.*$',
 ]
 
+conn = 'mysql -h 127.0.0.1 -P 9030 -uroot regression_test_tpch_sf1 <'
+
+explain_pattern = '''
+        explainStr -> 
+            explainStr.contains('''
+
+explain_pattern1 = ''') &&
+            explainStr.contains('''
+
+pattern = '''
+    explain {
+            sql """
+'''
+pattern1 = '''
+            """
+        check {
+            explainStr ->
+'''
+
+pattern2 = '''
+            
+        }
+    }
+}'''
+
 for task in tasks:
 
     print(task)
     f1, f2, num = task
 
-    f = open(f1, 'r')
-    oldsql = f.read()
-    f.close()
-
-    f = open(f1, 'w')
-    f.write('explain\n' + oldsql + ';')
-    f.close()
-
-    conn = 'mysql -h 127.0.0.1 -P 9030 -uroot regression_test_tpch_sf1 <'
-
+    with open(f1, 'r') as f:
+        oldsql = f.read()
+    with open(f1, 'w') as f:
+        f.write('explain\n' + oldsql + ';')
     print(conn + f1)
 
     lines = os.popen(conn + f1).readlines()
 
-    f = open(f1, 'w')
-    f.write(oldsql)
-    f.close()
-
+    with open(f1, 'w') as f:
+        f.write(oldsql)
     # print(oldsql)
 
     sqls = open(f1).readlines()
@@ -126,10 +146,7 @@ for task in tasks:
     for id, line in enumerate(lines):
         # print(g)
         line = line.replace('$','\$')
-        for p in patterns:
-            if len(re.findall(p, line)) > 0: #and line.find('null') == -1:
-                cur.append((line, id))
-
+        cur.extend((line, id) for p in patterns if len(re.findall(p, line)) > 0)
     # print(cur)    
     res_g = [[cur[0][0]]]
     for i in range(1, len(cur)):
@@ -144,13 +161,6 @@ for task in tasks:
             s = s[1:]
         g[0] = s
 
-    explain_pattern = '''
-        explainStr -> 
-            explainStr.contains('''
-
-    explain_pattern1 = ''') &&
-            explainStr.contains('''
-
     chkstr = ''
     for g in res_g:
         chkstr = chkstr + '\t\t' + 'explainStr.contains("' + g[0]
@@ -164,22 +174,6 @@ for task in tasks:
         chkstr = chkstr + '\t\t\t\t"' + g[-1] + '") && \n'
 
     chkstr = chkstr[:-4]
-    pattern = '''
-    explain {
-            sql """
-'''
-    pattern1 = '''
-            """
-        check {
-            explainStr ->
-'''
-
-    pattern2 = '''
-            
-        }
-    }
-}'''
-
     sql = ''
     for line in sqls[1:]:
         sql = sql + '\t\t' + line

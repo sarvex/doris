@@ -53,10 +53,7 @@ class IndexCalculator:
         return math.sqrt(d0*d0 + d1*d1)
 
     def sgn(self, i: int, j: int) -> float:
-        if self.cost_time_list[j][1] - self.cost_time_list[i][1] >= 0:
-            return 1
-        else:
-            return -1
+        return 1 if self.cost_time_list[j][1] - self.cost_time_list[i][1] >= 0 else -1
 
 
 class Test(unittest.TestCase):

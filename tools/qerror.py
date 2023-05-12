@@ -67,7 +67,7 @@ def write_results(path: str, title: str, result: list):
         file.write(title)
         file.write("\n")
         for item in result:
-            file.write(str(item) + " " + "\n")
+            file.write(f"{str(item)} " + "\n")
         file.write("\n")
 
 
@@ -87,9 +87,8 @@ def execute_command(cmd: str):
 
 
 def execute_sql(sql_file: str):
-    command = mycli_cmd + " < " + sql_file
-    result = execute_command(command).decode("utf-8")
-    return result
+    command = f"{mycli_cmd} < {sql_file}"
+    return execute_command(command).decode("utf-8")
 
 
 def get_q_error(trace_id):
@@ -109,16 +108,15 @@ def get_q_error(trace_id):
 
 
 def iterates_sqls(path: str, if_write_results: bool) -> list:
-    cost_times = []
     files = os.listdir(path)
     files.sort(key=extract_number)
     for filename in files:
         if filename.endswith(".sql"):
             filepath = os.path.join(path, filename)
-            traced_sql_file = filepath + ".traced"
+            traced_sql_file = f"{filepath}.traced"
             content = read_lines(filepath)
             sql_num = extract_number(filename)
-            print("sql num" + str(sql_num))
+            print(f"sql num{str(sql_num)}")
             if if_write_results:
                 write_results(traced_sql_file, str(sql_file_prefix_for_trace.format(sql_num)), content)
                 execute_sql(traced_sql_file)
@@ -126,7 +124,7 @@ def iterates_sqls(path: str, if_write_results: bool) -> list:
                 os.remove(traced_sql_file)
             else:
                 execute_sql(filepath)
-    return cost_times
+    return []
 
 
 if __name__ == '__main__':

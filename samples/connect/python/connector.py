@@ -19,6 +19,7 @@ specific language governing permissions and limitations
 under the License.
 """
 
+
 import mysql.connector
 
 config = {
@@ -33,7 +34,7 @@ config = {
 try:
     cnx = mysql.connector.connect(**config)
 except mysql.connector.Error as err:
-    print("connect to doris failed. {}".format(err))
+    print(f"connect to doris failed. {err}")
     exit(1)
 print("connect to doris successfully")
 
@@ -43,7 +44,7 @@ cursor = cnx.cursor()
 try:
     cursor.execute("CREATE DATABASE IF NOT EXISTS db_test")
 except mysql.connector.Error as err:
-    print("create database failed. {}".format(err))
+    print(f"create database failed. {err}")
     exit(1)
 print("create database successfully")
 
@@ -51,7 +52,7 @@ print("create database successfully")
 try:
     cursor.execute("USE db_test")
 except mysql.connector.Error as err:
-    print("set db context failed. {}".format(err))
+    print(f"set db context failed. {err}")
     exit(1)
 print("set db context successfully")
 
@@ -63,7 +64,7 @@ sql = ("CREATE TABLE IF NOT EXISTS table_test(siteid INT, citycode SMALLINT, pv 
 try:
     cursor.execute(sql)
 except mysql.connector.Error as err:
-    print("create table failed. {}".format(err))
+    print(f"create table failed. {err}")
     exit(1)
 print("create table successfully")
 
@@ -72,7 +73,7 @@ sql = "INSERT INTO table_test values(1, 2, 3), (4, 5, 6), (1, 2, 4)"
 try:
     cursor.execute(sql)
 except mysql.connector.Error as err:
-    print("insert data failed. {}".format(err))
+    print(f"insert data failed. {err}")
     exit(1)
 print("insert data successfully")
 
@@ -81,7 +82,7 @@ sql = "SELECT siteid, citycode, pv FROM table_test"
 try:
     cursor.execute(sql)
 except mysql.connector.Error as err:
-    print("query data failed. {}".format(err))
+    print(f"query data failed. {err}")
     exit(1)
 print("query data successfully")
 print("siteid\tcitycode\tpv")
@@ -92,6 +93,6 @@ for (siteid, citycode, pv) in cursor:
 try:
     cursor.execute("DROP DATABASE IF EXISTS db_test")
 except mysql.connector.Error as err:
-    print("drop database failed. {}".format(err))
+    print(f"drop database failed. {err}")
     exit(1)
 print("drop database successfully")
