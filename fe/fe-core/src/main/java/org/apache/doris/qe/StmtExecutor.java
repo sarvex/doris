@@ -115,6 +115,7 @@ import org.apache.doris.mysql.MysqlSerializer;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.NereidsPlanner;
 import org.apache.doris.nereids.StatementContext;
+import org.apache.doris.nereids.exceptions.ParseException;
 import org.apache.doris.nereids.glue.LogicalPlanAdapter;
 import org.apache.doris.nereids.minidump.MinidumpUtils;
 import org.apache.doris.nereids.parser.NereidsParser;
@@ -134,6 +135,8 @@ import org.apache.doris.qe.QueryState.MysqlStateType;
 import org.apache.doris.qe.cache.Cache;
 import org.apache.doris.qe.cache.CacheAnalyzer;
 import org.apache.doris.qe.cache.CacheAnalyzer.CacheMode;
+import org.apache.doris.resource.resourcegroup.QueryQueue;
+import org.apache.doris.resource.resourcegroup.QueueOfferToken;
 import org.apache.doris.rewrite.ExprRewriter;
 import org.apache.doris.rewrite.mvrewrite.MVSelectFailedException;
 import org.apache.doris.rpc.RpcException;
@@ -194,8 +197,8 @@ public class StmtExecutor {
     private static final Logger LOG = LogManager.getLogger(StmtExecutor.class);
 
     private static final AtomicLong STMT_ID_GENERATOR = new AtomicLong(0);
-    private static final int MAX_DATA_TO_SEND_FOR_TXN = 100;
-    private static final String NULL_VALUE_FOR_LOAD = "\\N";
+    public static final int MAX_DATA_TO_SEND_FOR_TXN = 100;
+    public static final String NULL_VALUE_FOR_LOAD = "\\N";
     private final Object writeProfileLock = new Object();
     private ConnectContext context;
     private final StatementContext statementContext;
@@ -203,6 +206,9 @@ public class StmtExecutor {
     private OriginStatement originStmt;
     private StatementBase parsedStmt;
     private Analyzer analyzer;
+    private QueryQueue queryQueue = null;
+    // by default, false means no query queued, then no need to poll when query finish
+    private QueueOfferToken offerRet = new QueueOfferToken(false);
     private ProfileType profileType = ProfileType.QUERY;
     private volatile Coordinator coord = null;
     private MasterOpExecutor masterOpExecutor = null;
@@ -324,6 +330,10 @@ public class StmtExecutor {
         return planner;
     }
 
+    public void setPlanner(Planner planner) {
+        this.planner = planner;
+    }
+
     public boolean isForwardToMaster() {
         if (Env.getCurrentEnv().isMaster()) {
             return false;
@@ -406,16 +416,17 @@ public class StmtExecutor {
                     || (parsedStmt == null && sessionVariable.isEnableNereidsPlanner())) {
                 try {
                     executeByNereids(queryId);
-                } catch (NereidsException e) {
+                } catch (NereidsException | ParseException e) {
                     if (context.getMinidump() != null) {
                         MinidumpUtils.saveMinidumpString(context.getMinidump(), DebugUtil.printId(context.queryId()));
                     }
                     // try to fall back to legacy planner
                     LOG.warn("nereids cannot process statement\n" + originStmt.originStmt
                             + "\n because of " + e.getMessage(), e);
-                    if (!context.getSessionVariable().enableFallbackToOriginalPlanner) {
+                    if (e instanceof NereidsException
+                            && !context.getSessionVariable().enableFallbackToOriginalPlanner) {
                         LOG.warn("Analyze failed. {}", context.getQueryIdentifier(), e);
-                        throw e.getException();
+                        throw ((NereidsException) e).getException();
                     }
                     LOG.info("fall back to legacy planner");
                     parsedStmt = null;
@@ -532,16 +543,38 @@ public class StmtExecutor {
         if (parsedStmt != null) {
             return;
         }
-        List<StatementBase> statements = new NereidsParser().parseSQL(originStmt.originStmt);
+        List<StatementBase> statements;
+        try {
+            statements = new NereidsParser().parseSQL(originStmt.originStmt);
+        } catch (Exception e) {
+            throw new ParseException("Nereids parse failed. " + e.getMessage());
+        }
         if (statements.size() <= originStmt.idx) {
-            throw new NereidsException(
-                    new AnalysisException("Nereids parse failed. Parser get " + statements.size() + " statements,"
-                            + " but we need at least " + originStmt.idx + " statements."));
+            throw new ParseException("Nereids parse failed. Parser get " + statements.size() + " statements,"
+                            + " but we need at least " + originStmt.idx + " statements.");
         }
         parsedStmt = statements.get(originStmt.idx);
     }
 
     private void handleQueryWithRetry(TUniqueId queryId) throws Exception {
+        // queue query here
+        if (!parsedStmt.isExplain() && Config.enable_resource_group && Config.enable_query_queue) {
+            this.queryQueue = analyzer.getEnv().getResourceGroupMgr()
+                    .getResourceGroupQueryQueue(context.sessionVariable.resourceGroup);
+            try {
+                this.offerRet = queryQueue.offer();
+            } catch (InterruptedException e) {
+                // this Exception means try lock/await failed, so no need to handle offer result
+                LOG.error("error happens when offer queue, query id=" + DebugUtil.printId(queryId) + " ", e);
+                throw new RuntimeException("interrupted Exception happens when queue query");
+            }
+            if (!offerRet.isOfferSuccess()) {
+                String retMsg = "queue failed, reason=" + offerRet.getOfferResultDetail();
+                LOG.error("query (id=" + DebugUtil.printId(queryId) + ") " + retMsg);
+                throw new UserException(retMsg);
+            }
+        }
+
         int retryTime = Config.max_query_retry_time;
         for (int i = 0; i < retryTime; i++) {
             try {
@@ -591,18 +624,6 @@ public class StmtExecutor {
         if (parsedStmt instanceof QueryStmt) {
             context.getState().setIsQuery(true);
         }
-        if (parsedStmt instanceof UnifiedLoadStmt) {
-            // glue code for unified load
-            final UnifiedLoadStmt unifiedLoadStmt = (UnifiedLoadStmt) parsedStmt;
-            unifiedLoadStmt.init();
-            final StatementBase proxyStmt = unifiedLoadStmt.getProxyStmt();
-            parsedStmt = proxyStmt;
-            if (!(proxyStmt instanceof LoadStmt)) {
-                Preconditions.checkState(
-                        parsedStmt instanceof InsertStmt && ((InsertStmt) parsedStmt).needLoadManager(),
-                        new IllegalStateException("enable_unified_load=true, should be external insert stmt"));
-            }
-        }
 
         try {
             if (context.isTxnModel() && !(parsedStmt instanceof InsertStmt)
@@ -623,6 +644,9 @@ public class StmtExecutor {
                     throw e;
                 } finally {
                     queryAnalysisSpan.end();
+                    if (offerRet.isOfferSuccess()) {
+                        queryQueue.poll();
+                    }
                 }
                 if (isForwardToMaster()) {
                     if (isProxy) {
@@ -803,7 +827,7 @@ public class StmtExecutor {
     }
 
     // Analyze one statement to structure in memory.
-    public void analyze(TQueryOptions tQueryOptions) throws UserException {
+    public void analyze(TQueryOptions tQueryOptions) throws UserException, InterruptedException {
         if (LOG.isDebugEnabled()) {
             LOG.debug("begin to analyze stmt: {}, forwarded stmt id: {}", context.getStmtId(),
                     context.getForwardedStmtId());
@@ -867,14 +891,24 @@ public class StmtExecutor {
             }
         }
 
+        // convert unified load stmt here
+        if (parsedStmt instanceof UnifiedLoadStmt) {
+            // glue code for unified load
+            final UnifiedLoadStmt unifiedLoadStmt = (UnifiedLoadStmt) parsedStmt;
+            unifiedLoadStmt.init();
+            final StatementBase proxyStmt = unifiedLoadStmt.getProxyStmt();
+            parsedStmt = proxyStmt;
+            if (!(proxyStmt instanceof LoadStmt)) {
+                Preconditions.checkState(
+                        parsedStmt instanceof InsertStmt && ((InsertStmt) parsedStmt).needLoadManager(),
+                        "enable_unified_load=true, should be external insert stmt");
+            }
+        }
+
         if (parsedStmt instanceof QueryStmt
                 || (parsedStmt instanceof InsertStmt && !((InsertStmt) parsedStmt).needLoadManager())
                 || parsedStmt instanceof CreateTableAsSelectStmt
                 || parsedStmt instanceof InsertOverwriteTableStmt) {
-            if (Config.enable_resource_group && context.sessionVariable.enablePipelineEngine()) {
-                analyzer.setResourceGroups(analyzer.getEnv().getResourceGroupMgr()
-                        .getResourceGroup(context.sessionVariable.resourceGroup));
-            }
             Map<Long, TableIf> tableMap = Maps.newTreeMap();
             QueryStmt queryStmt;
             Set<String> parentViewNameSet = Sets.newHashSet();
@@ -1059,6 +1093,11 @@ public class StmtExecutor {
                 if (explainOptions != null) {
                     parsedStmt.setIsExplain(explainOptions);
                 }
+            }
+            if (parsedStmt instanceof QueryStmt && Config.enable_resource_group
+                    && context.sessionVariable.enablePipelineEngine()) {
+                analyzer.setResourceGroups(analyzer.getEnv().getResourceGroupMgr()
+                        .getResourceGroup(context.sessionVariable.resourceGroup));
             }
         }
         profile.getSummaryProfile().setQueryAnalysisFinishTime();
@@ -1817,8 +1856,11 @@ public class StmtExecutor {
                 throw new DdlException("Unknown load job type");
             }
             LoadManagerAdapter loadManagerAdapter = context.getEnv().getLoadManagerAdapter();
-            loadManagerAdapter.startLoadFromInsertStmt(insertStmt);
-            context.getState().setOk();
+            loadManagerAdapter.submitLoadFromInsertStmt(context, insertStmt);
+            // when complete
+            if (loadManagerAdapter.getMysqlLoadId() != null) {
+                this.mysqlLoadId = loadManagerAdapter.getMysqlLoadId();
+            }
         } catch (UserException e) {
             // Return message to info client what happened.
             LOG.debug("DDL statement({}) process failed.", originStmt.originStmt, e);
@@ -2451,6 +2493,14 @@ public class StmtExecutor {
 
     public SummaryProfile getSummaryProfile() {
         return profile.getSummaryProfile();
+    }
+
+    public Profile getProfile() {
+        return profile;
+    }
+
+    public void setProfileType(ProfileType profileType) {
+        this.profileType = profileType;
     }
 }
 

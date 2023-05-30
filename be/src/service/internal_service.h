@@ -180,6 +180,11 @@ public:
                                       PFetchColIdsResponse* response,
                                       google::protobuf::Closure* done) override;
 
+    void get_tablet_rowset_versions(google::protobuf::RpcController* controller,
+                                    const PGetTabletVersionsRequest* request,
+                                    PGetTabletVersionsResponse* response,
+                                    google::protobuf::Closure* done) override;
+
 private:
     Status _exec_plan_fragment(const std::string& s_request, PFragmentRequestVersion version,
                                bool compact);
@@ -207,7 +212,7 @@ private:
     void _response_pull_slave_rowset(const std::string& remote_host, int64_t brpc_port,
                                      int64_t txn_id, int64_t tablet_id, int64_t node_id,
                                      bool is_succeed);
-    Status _multi_get(const PMultiGetRequest* request, PMultiGetResponse* response);
+    Status _multi_get(const PMultiGetRequest& request, PMultiGetResponse* response);
 
     void _get_column_ids_by_tablet_ids(google::protobuf::RpcController* controller,
                                        const PFetchColIdsRequest* request,

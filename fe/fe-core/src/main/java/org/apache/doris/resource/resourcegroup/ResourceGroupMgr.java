@@ -46,6 +46,7 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class ResourceGroupMgr implements Writable, GsonPostProcessable {
@@ -113,6 +114,19 @@ public class ResourceGroupMgr implements Writable, GsonPostProcessable {
         return resourceGroups;
     }
 
+    public QueryQueue getResourceGroupQueryQueue(String groupName) throws UserException {
+        readLock();
+        try {
+            ResourceGroup resourceGroup = nameToResourceGroup.get(groupName);
+            if (resourceGroup == null) {
+                throw new UserException("Resource group " + groupName + " does not exist");
+            }
+            return resourceGroup.getQueryQueue();
+        } finally {
+            readUnlock();
+        }
+    }
+
     private void checkAndCreateDefaultGroup() {
         ResourceGroup defaultResourceGroup = null;
         writeLock();
@@ -122,6 +136,8 @@ public class ResourceGroupMgr implements Writable, GsonPostProcessable {
             }
             Map<String, String> properties = Maps.newHashMap();
             properties.put(ResourceGroup.CPU_SHARE, "10");
+            properties.put(ResourceGroup.MEMORY_LIMIT, "30%");
+            properties.put(ResourceGroup.ENABLE_MEMORY_OVERCOMMIT, "true");
             defaultResourceGroup = ResourceGroup.create(DEFAULT_GROUP_NAME, properties);
             nameToResourceGroup.put(DEFAULT_GROUP_NAME, defaultResourceGroup);
             idToResourceGroup.put(defaultResourceGroup.getId(), defaultResourceGroup);
@@ -141,18 +157,32 @@ public class ResourceGroupMgr implements Writable, GsonPostProcessable {
         String resourceGroupName = resourceGroup.getName();
         writeLock();
         try {
-            if (nameToResourceGroup.putIfAbsent(resourceGroupName, resourceGroup) != null) {
+            if (nameToResourceGroup.containsKey(resourceGroupName)) {
                 if (stmt.isIfNotExists()) {
                     return;
                 }
                 throw new DdlException("Resource group " + resourceGroupName + " already exist");
             }
+            checkGlobalUnlock(resourceGroup, null);
+            nameToResourceGroup.put(resourceGroupName, resourceGroup);
             idToResourceGroup.put(resourceGroup.getId(), resourceGroup);
             Env.getCurrentEnv().getEditLog().logCreateResourceGroup(resourceGroup);
         } finally {
             writeUnlock();
         }
         LOG.info("Create resource group success: {}", resourceGroup);
+    }
+
+    private void checkGlobalUnlock(ResourceGroup resourceGroup, ResourceGroup old) throws DdlException {
+        double totalMemoryLimit = idToResourceGroup.values().stream().mapToDouble(ResourceGroup::getMemoryLimitPercent)
+                .sum() + resourceGroup.getMemoryLimitPercent();
+        if (!Objects.isNull(old)) {
+            totalMemoryLimit -= old.getMemoryLimitPercent();
+        }
+        if (totalMemoryLimit > 100.0 + 1e-6) {
+            throw new DdlException(
+                    "The sum of all resource group " + ResourceGroup.MEMORY_LIMIT + " cannot be greater than 100.0%.");
+        }
     }
 
     public void alterResourceGroup(AlterResourceGroupStmt stmt) throws DdlException {
@@ -167,7 +197,8 @@ public class ResourceGroupMgr implements Writable, GsonPostProcessable {
                 throw new DdlException("Resource Group(" + resourceGroupName + ") does not exist.");
             }
             ResourceGroup resourceGroup = nameToResourceGroup.get(resourceGroupName);
-            newResourceGroup = ResourceGroup.create(resourceGroup, properties);
+            newResourceGroup = ResourceGroup.copyAndUpdate(resourceGroup, properties);
+            checkGlobalUnlock(newResourceGroup, resourceGroup);
             nameToResourceGroup.put(resourceGroupName, newResourceGroup);
             idToResourceGroup.put(newResourceGroup.getId(), newResourceGroup);
             Env.getCurrentEnv().getEditLog().logAlterResourceGroup(newResourceGroup);
@@ -181,7 +212,7 @@ public class ResourceGroupMgr implements Writable, GsonPostProcessable {
         checkResourceGroupEnabled();
 
         String resourceGroupName = stmt.getResourceGroupName();
-        if (resourceGroupName == DEFAULT_GROUP_NAME) {
+        if (DEFAULT_GROUP_NAME.equals(resourceGroupName)) {
             throw new DdlException("Dropping default resource group " + resourceGroupName + " is not allowed");
         }
 

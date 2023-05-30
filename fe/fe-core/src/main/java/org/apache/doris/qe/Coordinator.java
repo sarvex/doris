@@ -47,6 +47,8 @@ import org.apache.doris.planner.ExceptNode;
 import org.apache.doris.planner.ExchangeNode;
 import org.apache.doris.planner.HashJoinNode;
 import org.apache.doris.planner.IntersectNode;
+import org.apache.doris.planner.MultiCastDataSink;
+import org.apache.doris.planner.MultiCastPlanFragment;
 import org.apache.doris.planner.OlapScanNode;
 import org.apache.doris.planner.PlanFragment;
 import org.apache.doris.planner.PlanFragmentId;
@@ -587,7 +589,7 @@ public class Coordinator {
         this.timeoutDeadline = System.currentTimeMillis() + queryOptions.getExecutionTimeout() * 1000L;
         if (topDataSink instanceof ResultSink || topDataSink instanceof ResultFileSink) {
             TNetworkAddress execBeAddr = topParams.instanceExecParams.get(0).host;
-            receiver = new ResultReceiver(topParams.instanceExecParams.get(0).instanceId,
+            receiver = new ResultReceiver(queryId, topParams.instanceExecParams.get(0).instanceId,
                     addressToBackendID.get(execBeAddr), toBrpcHost(execBeAddr), this.timeoutDeadline);
             if (LOG.isDebugEnabled()) {
                 LOG.debug("dispatch query job: {} to {}", DebugUtil.printId(queryId),
@@ -600,7 +602,7 @@ public class Coordinator {
                 ResultFileSink topResultFileSink = (ResultFileSink) topDataSink;
                 FsBroker broker = Env.getCurrentEnv().getBrokerMgr()
                         .getBroker(topResultFileSink.getBrokerName(), execBeAddr.getHostname());
-                topResultFileSink.setBrokerAddr(broker.ip, broker.port);
+                topResultFileSink.setBrokerAddr(broker.host, broker.port);
             }
         } else {
             // This is a load process.
@@ -824,7 +826,8 @@ public class Coordinator {
                 for (Map.Entry<TNetworkAddress, TPipelineFragmentParams> entry : tParams.entrySet()) {
                     Long backendId = this.addressToBackendID.get(entry.getKey());
                     PipelineExecContext pipelineExecContext = new PipelineExecContext(fragment.getFragmentId(),
-                            profileFragmentId, entry.getValue(), backendId, fragmentInstancesMap);
+                            profileFragmentId, entry.getValue(), backendId, fragmentInstancesMap,
+                            executionProfile.getLoadChannelProfile());
                     // Each tParam will set the total number of Fragments that need to be executed on the same BE,
                     // and the BE will determine whether all Fragments have been executed based on this information.
                     // Notice. load fragment has a small probability that FragmentNumOnHost is 0, for unknown reasons.
@@ -1139,7 +1142,11 @@ public class Coordinator {
                             + " query id: {}, instance id: {}, error message: {}",
                     jobId, DebugUtil.printId(queryId), instanceId != null ? DebugUtil.printId(instanceId) : "NaN",
                     status.getErrorMsg());
-            cancelInternal(Types.PPlanFragmentCancelReason.INTERNAL_ERROR);
+            if (status.getErrorCode() == TStatusCode.TIMEOUT) {
+                cancelInternal(Types.PPlanFragmentCancelReason.TIMEOUT);
+            } else {
+                cancelInternal(Types.PPlanFragmentCancelReason.INTERNAL_ERROR);
+            }
         } finally {
             lock.unlock();
         }
@@ -1282,6 +1289,9 @@ public class Coordinator {
             }
         }
 
+        // compute multi cast fragment params
+        computeMultiCastFragmentParams();
+
         // assign runtime filter merge addr and target addr
         assignRuntimeFilterAddr();
 
@@ -1380,6 +1390,46 @@ public class Coordinator {
                         dest.setBrpcServer(toBrpcHost(destParams.instanceExecParams.get(j).host));
                         params.destinations.add(dest);
                     }
+                }
+            }
+        }
+    }
+
+    private void computeMultiCastFragmentParams() throws Exception {
+        for (FragmentExecParams params : fragmentExecParamsMap.values()) {
+            if (!(params.fragment instanceof MultiCastPlanFragment)) {
+                continue;
+            }
+
+            MultiCastPlanFragment multi = (MultiCastPlanFragment) params.fragment;
+            Preconditions.checkState(multi.getSink() instanceof MultiCastDataSink);
+            MultiCastDataSink multiSink = (MultiCastDataSink) multi.getSink();
+
+            for (int i = 0; i < multi.getDestFragmentList().size(); i++) {
+                PlanFragment destFragment = multi.getDestFragmentList().get(i);
+                DataStreamSink sink = multiSink.getDataStreamSinks().get(i);
+
+                if (destFragment == null) {
+                    continue;
+                }
+                FragmentExecParams destParams = fragmentExecParamsMap.get(destFragment.getFragmentId());
+                multi.getDestFragmentList().get(i).setOutputPartition(params.fragment.getOutputPartition());
+
+                PlanNodeId exchId = sink.getExchNodeId();
+                Preconditions.checkState(!destParams.perExchNumSenders.containsKey(exchId.asInt()));
+                if (destParams.perExchNumSenders.get(exchId.asInt()) == null) {
+                    destParams.perExchNumSenders.put(exchId.asInt(), params.instanceExecParams.size());
+                } else {
+                    destParams.perExchNumSenders.put(exchId.asInt(),
+                            params.instanceExecParams.size() + destParams.perExchNumSenders.get(exchId.asInt()));
+                }
+
+                for (int j = 0; j < destParams.instanceExecParams.size(); ++j) {
+                    TPlanFragmentDestination dest = new TPlanFragmentDestination();
+                    dest.fragment_instance_id = destParams.instanceExecParams.get(j).instanceId;
+                    dest.server = toRpcHost(destParams.instanceExecParams.get(j).host);
+                    dest.brpc_server = toBrpcHost(destParams.instanceExecParams.get(j).host);
+                    multiSink.getDestinations().get(i).add(dest);
                 }
             }
         }
@@ -2686,6 +2736,7 @@ public class Coordinator {
         volatile boolean done;
         boolean hasCanceled;
         Map<TUniqueId, RuntimeProfile> fragmentInstancesMap;
+        RuntimeProfile loadChannelProfile;
         int cancelProgress = 0;
         int profileFragmentId;
         TNetworkAddress brpcAddress;
@@ -2697,12 +2748,14 @@ public class Coordinator {
 
         public PipelineExecContext(PlanFragmentId fragmentId, int profileFragmentId,
                 TPipelineFragmentParams rpcParams, Long backendId,
-                Map<TUniqueId, RuntimeProfile> fragmentInstancesMap) {
+                Map<TUniqueId, RuntimeProfile> fragmentInstancesMap,
+                RuntimeProfile loadChannelProfile) {
             this.profileFragmentId = profileFragmentId;
             this.fragmentId = fragmentId;
             this.rpcParams = rpcParams;
             this.numInstances = rpcParams.local_params.size();
             this.fragmentInstancesMap = fragmentInstancesMap;
+            this.loadChannelProfile = loadChannelProfile;
 
             this.initiated = false;
             this.done = false;
@@ -2740,6 +2793,9 @@ public class Coordinator {
 
             if (params.isSetProfile()) {
                 profile.update(params.profile);
+            }
+            if (params.isSetLoadChannelProfile()) {
+                loadChannelProfile.update(params.loadChannelProfile);
             }
             if (params.done) {
                 profile.setIsDone(true);
@@ -3076,6 +3132,7 @@ public class Coordinator {
                 params.setBackendNum(backendNum++);
                 params.setQueryGlobals(queryGlobals);
                 params.setQueryOptions(queryOptions);
+                params.query_options.setEnablePipelineEngine(false);
                 params.params.setSendQueryStatisticsWithEveryBatch(
                         fragment.isTransferQueryStatisticsWithEveryBatch());
                 params.params.setRuntimeFilterParams(new TRuntimeFilterParams());
@@ -3140,6 +3197,7 @@ public class Coordinator {
                     params.setCoord(coordAddress);
                     params.setQueryGlobals(queryGlobals);
                     params.setQueryOptions(queryOptions);
+                    params.query_options.setEnablePipelineEngine(true);
                     params.query_options.setMemLimit(memLimit);
                     params.setSendQueryStatisticsWithEveryBatch(
                             fragment.isTransferQueryStatisticsWithEveryBatch());

@@ -1965,6 +1965,16 @@ This configs can set to true to disable the automatic colocate tables's relocate
 2. Because once the balance is turned off, the unstable colocate table may not be restored
 3. Eventually the colocate plan cannot be used when querying.
 
+#### `balance_slot_num_per_path`
+
+Default: 1
+
+IsMutable：true
+
+MasterOnly：true
+
+Default number of slots per path during balance.
+
 #### `disable_tablet_scheduler`
 
 Default:false
@@ -2700,6 +2710,19 @@ MasterOnly: false
 If false, when select from tables in information_schema database,
 the result will not contain the information of the table in external catalog.
 This is to avoid query time when external catalog is not reachable.
+
+
+#### `enable_query_hit_stats`
+
+<version since="dev"></version>
+
+Default: false
+
+IsMutable: true
+
+MasterOnly: false
+
+Controls whether to enable query hit statistics. The default is false.
 
 #### `max_instance_num`
 
