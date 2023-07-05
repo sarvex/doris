@@ -235,7 +235,7 @@ under the License.
         <metrics-core.version>4.0.2</metrics-core.version>
         <netty-all.version>4.1.89.Final</netty-all.version>
         <objenesis.version>2.1</objenesis.version>
-        <grpc.version>1.30.0</grpc.version>
+        <grpc.version>1.53.0</grpc.version>
         <protobuf.version>3.21.12</protobuf.version>
         <!-- we use protoc-jar-maven-plugin to generate protobuf generated code -->
         <!-- see https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/ to get correct version -->
