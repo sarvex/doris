@@ -202,7 +202,7 @@ under the License.
         <skip.plugin>false</skip.plugin>
         <sonar.organization>apache</sonar.organization>
         <sonar.host.url>https://sonarcloud.io</sonar.host.url>
-        <aspectj.version>1.9.7</aspectj.version>
+        <aspectj.version>1.9.20</aspectj.version>
         <cglib.version>2.2</cglib.version>
         <commons-cli.version>1.4</commons-cli.version>
         <commons-filerupload.version>1.5</commons-filerupload.version>
