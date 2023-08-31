@@ -300,6 +300,7 @@ DEFINE_mInt32(trash_file_expire_time_sec, "259200");
 // minimum file descriptor number
 // modify them upon necessity
 DEFINE_Int32(min_file_descriptor_number, "60000");
+DEFINE_mBool(disable_segment_cache, "false");
 DEFINE_Int64(index_stream_cache_capacity, "10737418240");
 DEFINE_String(row_cache_mem_limit, "20%");
 
@@ -1077,6 +1078,8 @@ DEFINE_mBool(enable_merge_on_write_correctness_check, "true");
 DEFINE_mString(user_files_secure_path, "${DORIS_HOME}");
 
 DEFINE_Int32(partition_topn_partition_threshold, "1024");
+
+DEFINE_Int32(fe_expire_duration_seconds, "60");
 
 #ifdef BE_TEST
 // test s3

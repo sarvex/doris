@@ -45,11 +45,11 @@ statement
         (WITH LABEL labelName=identifier)? cols=identifierList?  // label and columns define
         (LEFT_BRACKET hints=identifierSeq RIGHT_BRACKET)?  // hint define
         query                                                          #insertIntoQuery
-    | explain? UPDATE tableName=multipartIdentifier tableAlias
+    | explain? cte? UPDATE tableName=multipartIdentifier tableAlias
         SET updateAssignmentSeq
         fromClause?
         whereClause                                                    #update
-    | explain? DELETE FROM tableName=multipartIdentifier tableAlias
+    | explain? cte? DELETE FROM tableName=multipartIdentifier tableAlias
         (PARTITION partition=identifierList)?
         (USING relation (COMMA relation)*)
         whereClause                                                    #delete
@@ -395,6 +395,18 @@ primaryExpression
                 (INTERVAL unitsAmount=valueExpression  unit=datetimeUnit
                 | unitsAmount=valueExpression)
             RIGHT_PAREN                                                                        #date_sub
+    | name=DATE_FLOOR
+            LEFT_PAREN
+                timestamp=valueExpression COMMA
+                (INTERVAL unitsAmount=valueExpression  unit=datetimeUnit
+                | unitsAmount=valueExpression)
+            RIGHT_PAREN                                                                        #dateFloor 
+    | name=DATE_CEIL
+            LEFT_PAREN
+                timestamp=valueExpression COMMA
+                (INTERVAL unitsAmount=valueExpression  unit=datetimeUnit
+                | unitsAmount=valueExpression)
+            RIGHT_PAREN                                                                        #dateCeil
     | CASE whenClause+ (ELSE elseExpression=expression)? END                                   #searchedCase
     | CASE value=expression whenClause+ (ELSE elseExpression=expression)? END                  #simpleCase
     | name=CAST LEFT_PAREN expression AS dataType RIGHT_PAREN                                  #cast
@@ -624,8 +636,10 @@ nonReserved
     | DATE
     | DATEV2
     | DATE_ADD
+    | DATE_CEIL
     | DATEDIFF
     | DATE_DIFF
+    | DATE_FLOOR
     | DAY
     | DBPROPERTIES
     | DEFINED
