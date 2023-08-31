@@ -21,6 +21,7 @@ import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.MetaNotFoundException;
+import org.apache.doris.datasource.CatalogIf;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
@@ -168,7 +169,7 @@ public interface DatabaseIf<T extends TableIf> {
         T table = getTableOrMetaException(tableName);
         if (!tableTypes.contains(table.getType())) {
             throw new MetaNotFoundException(
-                    "Tye type of " + tableName + " doesn't match, expected data tables=" + tableTypes);
+                    "Type of " + tableName + " doesn't match, expected data tables=" + tableTypes);
         }
         return table;
     }
@@ -192,7 +193,7 @@ public interface DatabaseIf<T extends TableIf> {
         T table = getTableOrMetaException(tableId);
         if (!tableTypes.contains(table.getType())) {
             throw new MetaNotFoundException(
-                    "Tye type of " + tableId + " doesn't match, expected data tables=" + tableTypes);
+                    "Type of " + tableId + " doesn't match, expected data tables=" + tableTypes);
         }
         return table;
     }
@@ -203,6 +204,15 @@ public interface DatabaseIf<T extends TableIf> {
 
     default T getTableOrDdlException(long tableId) throws DdlException {
         return getTableOrException(tableId, t -> new DdlException(ErrorCode.ERR_BAD_TABLE_ERROR.formatErrorMsg(t)));
+    }
+
+    default T getTableOrDdlException(long tableId, TableIf.TableType tableType) throws DdlException {
+        T table = getTableOrDdlException(tableId);
+        if (table.getType() != tableType) {
+            throw new DdlException(
+                    "table type is not " + tableType + ", tableId=" + tableId + ", type=" + table.getType());
+        }
+        return table;
     }
 
     default T getTableOrAnalysisException(String tableName) throws AnalysisException {
@@ -232,4 +242,10 @@ public interface DatabaseIf<T extends TableIf> {
     }
 
     void dropTable(String tableName);
+
+    CatalogIf getCatalog();
+
+    default long getLastUpdateTime() {
+        return -1L;
+    }
 }

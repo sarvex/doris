@@ -29,6 +29,7 @@ import org.apache.doris.catalog.Partition;
 import org.apache.doris.catalog.ReplicaAllocation;
 import org.apache.doris.catalog.Tablet;
 import org.apache.doris.catalog.Tablet.TabletStatus;
+import org.apache.doris.clone.TabletChecker.CheckerCounter;
 import org.apache.doris.clone.TabletSchedCtx.Priority;
 import org.apache.doris.clone.TabletScheduler.AddResult;
 import org.apache.doris.common.Config;
@@ -201,7 +202,11 @@ public class ColocateTableCheckerAndBalancer extends MasterDaemon {
      * If every replicas match the backends in group, mark that group as stable.
      */
     private void matchGroup() {
+        long start = System.currentTimeMillis();
+        CheckerCounter counter = new CheckerCounter();
+
         Env env = Env.getCurrentEnv();
+        SystemInfoService infoService = Env.getCurrentSystemInfo();
         ColocateTableIndex colocateIndex = env.getColocateTableIndex();
         TabletScheduler tabletScheduler = env.getTabletScheduler();
 
@@ -243,6 +248,7 @@ public class ColocateTableCheckerAndBalancer extends MasterDaemon {
                                     backendBucketsSeq.size() + " vs. " + index.getTablets().size());
                             int idx = 0;
                             for (Long tabletId : index.getTabletIdsInOrder()) {
+                                counter.totalTabletNum++;
                                 Set<Long> bucketsSeq = backendBucketsSeq.get(idx);
                                 Preconditions.checkState(bucketsSeq.size() == replicationNum,
                                         bucketsSeq.size() + " vs. " + replicationNum);
@@ -250,11 +256,13 @@ public class ColocateTableCheckerAndBalancer extends MasterDaemon {
                                 TabletStatus st = tablet.getColocateHealthStatus(
                                         visibleVersion, replicaAlloc, bucketsSeq);
                                 if (st != TabletStatus.HEALTHY) {
+                                    counter.unhealthyTabletNum++;
                                     unstableReason = String.format("get unhealthy tablet %d in colocate table."
                                             + " status: %s", tablet.getId(), st);
                                     LOG.debug(unstableReason);
 
-                                    if (!tablet.readyToBeRepaired(Priority.NORMAL)) {
+                                    if (!tablet.readyToBeRepaired(infoService, Priority.NORMAL)) {
+                                        counter.tabletNotReady++;
                                         continue;
                                     }
 
@@ -265,7 +273,7 @@ public class ColocateTableCheckerAndBalancer extends MasterDaemon {
                                             System.currentTimeMillis());
                                     // the tablet status will be set again when being scheduled
                                     tabletCtx.setTabletStatus(st);
-                                    tabletCtx.setOrigPriority(Priority.NORMAL);
+                                    tabletCtx.setPriority(Priority.NORMAL);
                                     tabletCtx.setTabletOrderIdx(idx);
 
                                     AddResult res = tabletScheduler.addTablet(tabletCtx, false /* not force */);
@@ -274,6 +282,10 @@ public class ColocateTableCheckerAndBalancer extends MasterDaemon {
                                         // skip this group and check next one.
                                         LOG.info("tablet scheduler return: {}. stop colocate table check", res.name());
                                         break OUT;
+                                    } else if (res == AddResult.ADDED) {
+                                        counter.addToSchedulerTabletNum++;
+                                    }  else {
+                                        counter.tabletInScheduler++;
                                     }
                                 }
                                 idx++;
@@ -292,10 +304,15 @@ public class ColocateTableCheckerAndBalancer extends MasterDaemon {
                 colocateIndex.markGroupUnstable(groupId, unstableReason, true);
             }
         } // end for groups
+
+        long cost = System.currentTimeMillis() - start;
+        LOG.info("finished to check tablets. unhealth/total/added/in_sched/not_ready: {}/{}/{}/{}/{}, cost: {} ms",
+                counter.unhealthyTabletNum, counter.totalTabletNum, counter.addToSchedulerTabletNum,
+                counter.tabletInScheduler, counter.tabletNotReady, cost);
     }
 
     /*
-     * Each balance is performed for a single resource group in a colocate group.
+     * Each balance is performed for a single workload group in a colocate group.
      * For example, if the replica allocation of a colocate group is {TagA: 2, TagB: 1},
      * So the backend bucket seq may be like:
      *
@@ -304,10 +321,10 @@ public class ColocateTableCheckerAndBalancer extends MasterDaemon {
      * TagA  B  C  A  B
      * TagB  D  D  D  D
      *
-     * First, we will handle resource group of TagA, then TagB.
+     * First, we will handle workload group of TagA, then TagB.
      *
-     * For a single resource group, the balance logic is as follow
-     * (Suppose there is only one resource group with 3 replicas):
+     * For a single workload group, the balance logic is as follow
+     * (Suppose there is only one workload group with 3 replicas):
      *
      * All backends: A,B,C,D,E,F,G,H,I,J
      *

@@ -33,17 +33,7 @@ suite("test_segcompaction_dup_keys_index") {
         getBackendIpHttpPort(backendId_to_backendIP, backendId_to_backendHttpPort);
 
         backend_id = backendId_to_backendIP.keySet()[0]
-        StringBuilder showConfigCommand = new StringBuilder();
-        showConfigCommand.append("curl -X GET http://")
-        showConfigCommand.append(backendId_to_backendIP.get(backend_id))
-        showConfigCommand.append(":")
-        showConfigCommand.append(backendId_to_backendHttpPort.get(backend_id))
-        showConfigCommand.append("/api/show_config")
-        logger.info(showConfigCommand.toString())
-        def process = showConfigCommand.toString().execute()
-        int code = process.waitFor()
-        String err = IOGroovyMethods.getText(new BufferedReader(new InputStreamReader(process.getErrorStream())));
-        String out = process.getText()
+        def (code, out, err) = show_be_config(backendId_to_backendIP.get(backend_id), backendId_to_backendHttpPort.get(backend_id))
         logger.info("Show config: code=" + code + ", out=" + out + ", err=" + err)
         assertEquals(code, 0)
         def configList = parseJson(out.trim())
@@ -119,6 +109,7 @@ suite("test_segcompaction_dup_keys_index") {
                 assertTrue(1 == 2, "load Timeout: $uuid")
             }
         }
+        sql "sync"
 
         qt_select_default """ SELECT * FROM ${tableName} WHERE col_0=47 order by col_1, col_2; """
         qt_select_default """ SELECT COUNT(*) FROM ${tableName} WHERE col_1 MATCH_ANY 'lemon'; """

@@ -151,11 +151,16 @@ public class SchemaTable extends Table {
             .put("session_variables",
                     new SchemaTable(SystemIdGenerator.getNextId(), "session_variables", TableType.SCHEMA,
                             builder().column("VARIABLE_NAME", ScalarType.createVarchar(64))
-                                    .column("VARIABLE_VALUE", ScalarType.createVarchar(1024)).build()))
+                                    .column("VARIABLE_VALUE", ScalarType.createVarchar(1024))
+                                    .column("DEFAULT_VALUE", ScalarType.createVarchar(1024))
+                                    .column("CHANGED", ScalarType.createVarchar(4))
+                                    .build()))
             .put("global_variables",
                     new SchemaTable(SystemIdGenerator.getNextId(), "global_variables", TableType.SCHEMA,
                             builder().column("VARIABLE_NAME", ScalarType.createVarchar(64))
-                                    .column("VARIABLE_VALUE", ScalarType.createVarchar(1024)).build()))
+                                    .column("VARIABLE_VALUE", ScalarType.createVarchar(1024))
+                                    .column("DEFAULT_VALUE", ScalarType.createVarchar(1024))
+                                    .column("CHANGED", ScalarType.createVarchar(4)).build()))
             .put("columns",
                     new SchemaTable(SystemIdGenerator.getNextId(), "columns", TableType.SCHEMA,
                             builder().column("TABLE_CATALOG", ScalarType.createVarchar(512))
@@ -392,6 +397,24 @@ public class SchemaTable extends Table {
                                     .column("CREATION_TIME", ScalarType.createType(PrimitiveType.BIGINT))
                                     .column("NEWEST_WRITE_TIMESTAMP", ScalarType.createType(PrimitiveType.BIGINT))
                                     .build()))
+            .put("parameters", new SchemaTable(SystemIdGenerator.getNextId(), "parameters", TableType.SCHEMA,
+                            builder().column("SPECIFIC_CATALOG", ScalarType.createVarchar(64))
+                                    .column("SPECIFIC_SCHEMA", ScalarType.createVarchar(64))
+                                    .column("SPECIFIC_NAME", ScalarType.createVarchar(64))
+                                    .column("ORDINAL_POSITION", ScalarType.createVarchar(77))
+                                    .column("PARAMETER_MODE", ScalarType.createVarchar(77))
+                                    .column("PARAMETER_NAME", ScalarType.createVarchar(77))
+                                    .column("DATA_TYPE", ScalarType.createVarchar(64))
+                                    .column("CHARACTER_OCTET_LENGTH", ScalarType.createVarchar(64))
+                                    .column("NUMERIC_PRECISION", ScalarType.createVarchar(512))
+                                    .column("NUMERIC_SCALE", ScalarType.createVarchar(64))
+                                    .column("DATETIME_PRECISION", ScalarType.createVarchar(64))
+                                    .column("CHARACTER_SET_NAME", ScalarType.createVarchar(256))
+                                    .column("COLLATION_NAME", ScalarType.createVarchar(64))
+                                    .column("DTD_IDENTIFIER", ScalarType.createVarchar(64))
+                                    .column("ROUTINE_TYPE", ScalarType.createVarchar(64))
+                                    .column("DATA_TYPEDTD_IDENDS", ScalarType.createVarchar(64))
+                                    .build()))
             .build();
 
     protected SchemaTable(long id, String name, TableType type, List<Column> baseSchema) {
@@ -422,7 +445,7 @@ public class SchemaTable extends Table {
         }
 
         public Builder column(String name, ScalarType type) {
-            columns.add(new Column(name, type.getPrimitiveType(), true));
+            columns.add(new Column(name, type, true));
             return this;
         }
 

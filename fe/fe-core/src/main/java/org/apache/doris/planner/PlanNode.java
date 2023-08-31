@@ -27,11 +27,13 @@ import org.apache.doris.analysis.CompoundPredicate;
 import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.ExprId;
 import org.apache.doris.analysis.ExprSubstitutionMap;
+import org.apache.doris.analysis.FunctionCallExpr;
 import org.apache.doris.analysis.FunctionName;
 import org.apache.doris.analysis.SlotId;
 import org.apache.doris.analysis.SlotRef;
 import org.apache.doris.analysis.TupleDescriptor;
 import org.apache.doris.analysis.TupleId;
+import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Function;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.Type;
@@ -39,7 +41,6 @@ import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.NotImplementedException;
 import org.apache.doris.common.TreeNode;
 import org.apache.doris.common.UserException;
-import org.apache.doris.common.util.VectorizedUtil;
 import org.apache.doris.statistics.PlanStats;
 import org.apache.doris.statistics.StatisticalType;
 import org.apache.doris.statistics.StatsDeriveResult;
@@ -47,6 +48,7 @@ import org.apache.doris.thrift.TExplainLevel;
 import org.apache.doris.thrift.TFunctionBinaryType;
 import org.apache.doris.thrift.TPlan;
 import org.apache.doris.thrift.TPlanNode;
+import org.apache.doris.thrift.TPushAggOp;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
@@ -134,12 +136,16 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
 
     //  Node should compact data.
     protected boolean compactData;
+    // Most of the plan node has the same numInstance as its (left) child, except some special nodes, such as
+    // 1. scan node, whose numInstance is calculated according to its data distribution
+    // 2. exchange node, which is gather distribution
+    // 3. union node, whose numInstance is the sum of its children's numInstance
+    // ...
+    // only special nodes need to call setNumInstances() and getNumInstances() from attribute numInstances
     protected int numInstances;
 
     // Runtime filters assigned to this node.
     protected List<RuntimeFilter> runtimeFilters = new ArrayList<>();
-
-    private boolean cardinalityIsDone = false;
 
     protected List<SlotId> outputSlotIds;
 
@@ -159,7 +165,7 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
         this.tupleIds = Lists.newArrayList(tupleIds);
         this.tblRefIds = Lists.newArrayList(tupleIds);
         this.cardinality = -1;
-        this.planNodeName = VectorizedUtil.isVectorized() ? "V" + planNodeName : planNodeName;
+        this.planNodeName = "V" + planNodeName;
         this.numInstances = 1;
         this.statisticalType = statisticalType;
     }
@@ -170,7 +176,7 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
         this.tupleIds = Lists.newArrayList();
         this.tblRefIds = Lists.newArrayList();
         this.cardinality = -1;
-        this.planNodeName = VectorizedUtil.isVectorized() ? "V" + planNodeName : planNodeName;
+        this.planNodeName = "V" + planNodeName;
         this.numInstances = 1;
         this.statisticalType = statisticalType;
     }
@@ -188,7 +194,7 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
         this.conjuncts = Expr.cloneList(node.conjuncts, null);
         this.cardinality = -1;
         this.compactData = node.compactData;
-        this.planNodeName = VectorizedUtil.isVectorized() ? "V" + planNodeName : planNodeName;
+        this.planNodeName = "V" + planNodeName;
         this.numInstances = 1;
         this.statisticalType = statisticalType;
     }
@@ -416,7 +422,7 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
         }
     }
 
-    protected Expr convertConjunctsToAndCompoundPredicate(List<Expr> conjuncts) {
+    public static Expr convertConjunctsToAndCompoundPredicate(List<Expr> conjuncts) {
         List<Expr> targetConjuncts = Lists.newArrayList(conjuncts);
         while (targetConjuncts.size() > 1) {
             List<Expr> newTargetConjuncts = Lists.newArrayList();
@@ -431,6 +437,21 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
 
         Preconditions.checkArgument(targetConjuncts.size() == 1);
         return targetConjuncts.get(0);
+    }
+
+    public static List<Expr> splitAndCompoundPredicateToConjuncts(Expr vconjunct) {
+        List<Expr> conjuncts = Lists.newArrayList();
+        if (vconjunct instanceof CompoundPredicate) {
+            CompoundPredicate andCompound = (CompoundPredicate) vconjunct;
+            if (andCompound.getOp().equals(CompoundPredicate.Operator.AND)) {
+                conjuncts.addAll(splitAndCompoundPredicateToConjuncts(vconjunct.getChild(0)));
+                conjuncts.addAll(splitAndCompoundPredicateToConjuncts(vconjunct.getChild(1)));
+            }
+        }
+        if (vconjunct != null && conjuncts.isEmpty()) {
+            conjuncts.add(vconjunct);
+        }
+        return conjuncts;
     }
 
     public void addConjuncts(List<Expr> conjuncts) {
@@ -810,7 +831,7 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
         return output.toString();
     }
 
-    protected String getExplainString(List<? extends Expr> exprs) {
+    public static String getExplainString(List<? extends Expr> exprs) {
         if (exprs == null) {
             return "";
         }
@@ -832,7 +853,7 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
     }
 
     public int getNumInstances() {
-        return numInstances;
+        return this.children.get(0).getNumInstances();
     }
 
     public boolean shouldColoAgg(AggregateInfo aggregateInfo) {
@@ -943,6 +964,25 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
         // don't round cardinality down to zero for safety.
         if (cardinality == 0 && preConjunctCardinality > 0) {
             cardinality = 1;
+        }
+    }
+
+    /**
+     * find planNode recursively based on the planNodeId
+     */
+    public static PlanNode findPlanNodeFromPlanNodeId(PlanNode root, PlanNodeId id) {
+        if (root == null || root.getId() == null || id == null) {
+            return null;
+        } else if (root.getId().equals(id)) {
+            return root;
+        } else {
+            for (PlanNode child : root.getChildren()) {
+                PlanNode retNode = findPlanNodeFromPlanNodeId(child, id);
+                if (retNode != null) {
+                    return retNode;
+                }
+            }
+            return null;
         }
     }
 
@@ -1143,5 +1183,23 @@ public abstract class PlanNode extends TreeNode<PlanNode> implements PlanStats {
 
     public void setCardinalityAfterFilter(long cardinalityAfterFilter) {
         this.cardinalityAfterFilter = cardinalityAfterFilter;
+    }
+
+    protected TPushAggOp pushDownAggNoGroupingOp = TPushAggOp.NONE;
+
+    public void setPushDownAggNoGrouping(TPushAggOp pushDownAggNoGroupingOp) {
+        this.pushDownAggNoGroupingOp = pushDownAggNoGroupingOp;
+    }
+
+    public TPushAggOp getPushDownAggNoGroupingOp() {
+        return pushDownAggNoGroupingOp;
+    }
+
+    public boolean pushDownAggNoGrouping(FunctionCallExpr aggExpr) {
+        return false;
+    }
+
+    public boolean pushDownAggNoGroupingCheckCol(FunctionCallExpr aggExpr, Column col) {
+        return false;
     }
 }

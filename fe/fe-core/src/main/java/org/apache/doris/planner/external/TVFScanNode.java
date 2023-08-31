@@ -18,6 +18,7 @@
 package org.apache.doris.planner.external;
 
 import org.apache.doris.analysis.TupleDescriptor;
+import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.FunctionGenTable;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.common.DdlException;
@@ -27,20 +28,22 @@ import org.apache.doris.common.util.Util;
 import org.apache.doris.planner.PlanNodeId;
 import org.apache.doris.spi.Split;
 import org.apache.doris.statistics.StatisticalType;
+import org.apache.doris.system.Backend;
 import org.apache.doris.tablefunction.ExternalFileTableValuedFunction;
+import org.apache.doris.tablefunction.LocalTableValuedFunction;
 import org.apache.doris.thrift.TBrokerFileStatus;
 import org.apache.doris.thrift.TFileAttributes;
 import org.apache.doris.thrift.TFileCompressType;
 import org.apache.doris.thrift.TFileFormatType;
 import org.apache.doris.thrift.TFileType;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import org.apache.hadoop.fs.Path;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -63,14 +66,21 @@ public class TVFScanNode extends FileQueryScanNode {
     }
 
     @Override
-    protected void doInitialize() throws UserException {
-        Preconditions.checkNotNull(desc);
-        computeColumnFilter();
-        initBackendPolicy();
-        initSchemaParams();
+    protected void initBackendPolicy() throws UserException {
+        List<String> preferLocations = new ArrayList<>();
+        if (tableValuedFunction instanceof LocalTableValuedFunction) {
+            // For local tvf, the backend was specified by backendId
+            Long backendId = ((LocalTableValuedFunction) tableValuedFunction).getBackendId();
+            Backend backend = Env.getCurrentSystemInfo().getBackend(backendId);
+            if (backend == null) {
+                throw new UserException("Backend " + backendId + " does not exist");
+            }
+            preferLocations.add(backend.getHost());
+        }
+        backendPolicy.init(preferLocations);
+        numNodes = backendPolicy.numBackends();
     }
 
-    @Override
     protected String getFsName(FileSplit split) {
         return tableValuedFunction.getFsName();
     }
@@ -93,6 +103,11 @@ public class TVFScanNode extends FileQueryScanNode {
 
     @Override
     public TFileType getLocationType() throws DdlException, MetaNotFoundException {
+        return getLocationType(null);
+    }
+
+    @Override
+    public TFileType getLocationType(String location) throws DdlException, MetaNotFoundException {
         return tableValuedFunction.getTFileType();
     }
 
@@ -103,7 +118,7 @@ public class TVFScanNode extends FileQueryScanNode {
 
     @Override
     public List<String> getPathPartitionKeys() {
-        return Lists.newArrayList();
+        return tableValuedFunction.getPathPartitionKeys();
     }
 
     @Override
@@ -114,6 +129,9 @@ public class TVFScanNode extends FileQueryScanNode {
     @Override
     public List<Split> getSplits() throws UserException {
         List<Split> splits = Lists.newArrayList();
+        if (tableValuedFunction.getTFileType() == TFileType.FILE_STREAM) {
+            return splits;
+        }
         List<TBrokerFileStatus> fileStatuses = tableValuedFunction.getFileStatuses();
         for (TBrokerFileStatus fileStatus : fileStatuses) {
             Path path = new Path(fileStatus.getPath());

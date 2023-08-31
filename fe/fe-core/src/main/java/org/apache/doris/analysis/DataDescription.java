@@ -154,6 +154,12 @@ public class DataDescription implements InsertStmt.DataDesc {
     private boolean isMysqlLoad = false;
     private int skipLines = 0;
 
+    private boolean isAnalyzed = false;
+
+    private byte enclose = 0;
+
+    private byte escape = 0;
+
     public DataDescription(String tableName,
                            PartitionNames partitionNames,
                            List<String> filePaths,
@@ -167,10 +173,31 @@ public class DataDescription implements InsertStmt.DataDesc {
     }
 
     public DataDescription(String tableName,
+            PartitionNames partitionNames,
+            List<String> filePaths,
+            List<String> columns,
+            Separator columnSeparator,
+            String fileFormat,
+            List<String> columnsFromPath,
+            boolean isNegative,
+            List<Expr> columnMappingList,
+            Expr fileFilterExpr,
+            Expr whereExpr,
+            LoadTask.MergeType mergeType,
+            Expr deleteCondition,
+            String sequenceColName,
+            Map<String, String> properties) {
+        this(tableName, partitionNames, filePaths, columns, columnSeparator, null,
+                fileFormat, columnsFromPath, isNegative, columnMappingList, fileFilterExpr, whereExpr,
+                mergeType, deleteCondition, sequenceColName, properties);
+    }
+
+    public DataDescription(String tableName,
                            PartitionNames partitionNames,
                            List<String> filePaths,
                            List<String> columns,
                            Separator columnSeparator,
+                           Separator lineDelimiter,
                            String fileFormat,
                            List<String> columnsFromPath,
                            boolean isNegative,
@@ -186,6 +213,7 @@ public class DataDescription implements InsertStmt.DataDesc {
         this.filePaths = filePaths;
         this.fileFieldNames = columns;
         this.columnSeparator = columnSeparator;
+        this.lineDelimiter = lineDelimiter;
         this.fileFormat = fileFormat;
         this.columnsFromPath = columnsFromPath;
         this.isNegative = isNegative;
@@ -277,6 +305,8 @@ public class DataDescription implements InsertStmt.DataDesc {
         this.fileFieldNames = taskInfo.getColumnExprDescs().getFileColNames();
         this.columnSeparator = taskInfo.getColumnSeparator();
         this.lineDelimiter = taskInfo.getLineDelimiter();
+        this.enclose = taskInfo.getEnclose();
+        this.escape = taskInfo.getEscape();
         getFileFormatAndCompressType(taskInfo);
         this.columnsFromPath = null;
         this.isNegative = taskInfo.getNegative();
@@ -572,6 +602,10 @@ public class DataDescription implements InsertStmt.DataDesc {
         return columnSeparator.getSeparator();
     }
 
+    public Separator getColumnSeparatorObj() {
+        return columnSeparator;
+    }
+
     public boolean isNegative() {
         return isNegative;
     }
@@ -591,8 +625,20 @@ public class DataDescription implements InsertStmt.DataDesc {
         return lineDelimiter.getSeparator();
     }
 
+    public Separator getLineDelimiterObj() {
+        return lineDelimiter;
+    }
+
     public void setLineDelimiter(Separator lineDelimiter) {
         this.lineDelimiter = lineDelimiter;
+    }
+
+    public byte getEnclose() {
+        return enclose;
+    }
+
+    public byte getEscape() {
+        return escape;
     }
 
     public String getSequenceCol() {
@@ -794,13 +840,16 @@ public class DataDescription implements InsertStmt.DataDesc {
             // hadoop load only supports the FunctionCallExpr
             Expr child1 = predicate.getChild(1);
             if (isHadoopLoad && !(child1 instanceof FunctionCallExpr)) {
-                throw new AnalysisException("Hadoop load only supports the designated function. "
-                        + "The error mapping function is:" + child1.toSql());
+                throw new AnalysisException(
+                        "Hadoop load only supports the designated function. " + "The error mapping function is:"
+                                + child1.toSql());
             }
-            ImportColumnDesc importColumnDesc = new ImportColumnDesc(column, child1);
+            // Must clone the expr, because in routine load, the expr will be analyzed for each task.
+            Expr cloned = child1.clone();
+            ImportColumnDesc importColumnDesc = new ImportColumnDesc(column, cloned);
             parsedColumnExprList.add(importColumnDesc);
-            if (child1 instanceof FunctionCallExpr) {
-                analyzeColumnToHadoopFunction(column, child1);
+            if (cloned instanceof FunctionCallExpr) {
+                analyzeColumnToHadoopFunction(column, cloned);
             }
         }
     }
@@ -998,6 +1047,9 @@ public class DataDescription implements InsertStmt.DataDesc {
     }
 
     public void analyze(String fullDbName) throws AnalysisException {
+        if (isAnalyzed) {
+            return;
+        }
         if (mergeType != LoadTask.MergeType.MERGE && deleteCondition != null) {
             throw new AnalysisException("not support DELETE ON clause when merge type is not MERGE.");
         }
@@ -1012,6 +1064,7 @@ public class DataDescription implements InsertStmt.DataDesc {
         if (isNegative && mergeType != LoadTask.MergeType.APPEND) {
             throw new AnalysisException("Negative is only used when merge type is append.");
         }
+        isAnalyzed = true;
     }
 
     public void analyzeWithoutCheckPriv(String fullDbName) throws AnalysisException {

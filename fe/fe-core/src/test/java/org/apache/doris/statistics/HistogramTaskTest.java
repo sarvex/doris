@@ -21,18 +21,15 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.common.FeConstants;
 import org.apache.doris.common.jmockit.Deencapsulation;
 import org.apache.doris.qe.StmtExecutor;
-import org.apache.doris.statistics.AnalysisTaskInfo.AnalysisMethod;
-import org.apache.doris.statistics.AnalysisTaskInfo.AnalysisMode;
-import org.apache.doris.statistics.AnalysisTaskInfo.AnalysisType;
-import org.apache.doris.statistics.AnalysisTaskInfo.JobType;
+import org.apache.doris.statistics.AnalysisInfo.AnalysisMethod;
+import org.apache.doris.statistics.AnalysisInfo.AnalysisMode;
+import org.apache.doris.statistics.AnalysisInfo.AnalysisType;
+import org.apache.doris.statistics.AnalysisInfo.JobType;
 import org.apache.doris.system.SystemInfoService;
 import org.apache.doris.utframe.TestWithFeService;
 
-import mockit.Expectations;
 import mockit.Mock;
 import mockit.MockUp;
-import mockit.Mocked;
-import mockit.Tested;
 import org.junit.FixMethodOrder;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -44,9 +41,6 @@ import java.util.concurrent.ConcurrentMap;
 
 @FixMethodOrder(value = MethodSorters.NAME_ASCENDING)
 public class HistogramTaskTest extends TestWithFeService {
-
-    @Mocked
-    AnalysisTaskScheduler analysisTaskScheduler;
 
     @Override
     protected void runBeforeAll() throws Exception {
@@ -71,14 +65,12 @@ public class HistogramTaskTest extends TestWithFeService {
         FeConstants.runningUnitTest = true;
     }
 
-    @Tested
-
     @Test
     public void test1TaskCreation() throws Exception {
 
         AnalysisManager analysisManager = Env.getCurrentEnv().getAnalysisManager();
         StmtExecutor executor = getSqlStmtExecutor(
-                "ANALYZE TABLE t1(col1) UPDATE HISTOGRAM");
+                "ANALYZE TABLE t1(col1) WITH HISTOGRAM");
         Assertions.assertNotNull(executor);
 
         ConcurrentMap<Long, Map<Long, BaseAnalysisTask>> taskMap =
@@ -100,8 +92,8 @@ public class HistogramTaskTest extends TestWithFeService {
 
     @Test
     public void test2TaskExecution() throws Exception {
-        AnalysisTaskExecutor analysisTaskExecutor = new AnalysisTaskExecutor(analysisTaskScheduler);
-        AnalysisTaskInfo analysisTaskInfo = new AnalysisTaskInfoBuilder()
+        AnalysisTaskExecutor analysisTaskExecutor = new AnalysisTaskExecutor(1);
+        AnalysisInfo analysisInfo = new AnalysisInfoBuilder()
                 .setJobId(0).setTaskId(0).setCatalogName("internal")
                 .setDbName(SystemInfoService.DEFAULT_CLUSTER + ":" + "histogram_task_test").setTblName("t1")
                 .setColName("col1").setJobType(JobType.MANUAL)
@@ -109,25 +101,13 @@ public class HistogramTaskTest extends TestWithFeService {
                 .setAnalysisMethod(AnalysisMethod.FULL)
                 .setAnalysisType(AnalysisType.HISTOGRAM)
                 .build();
-        HistogramTask task = new HistogramTask(analysisTaskInfo);
+        HistogramTask task = new HistogramTask(analysisInfo);
 
-        new MockUp<AnalysisTaskScheduler>() {
-            @Mock
-            public synchronized BaseAnalysisTask getPendingTasks() {
-                return task;
-            }
-        };
         new MockUp<AnalysisManager>() {
             @Mock
-            public void updateTaskStatus(AnalysisTaskInfo info, AnalysisState jobState, String message, long time) {}
-        };
-        new Expectations() {
-            {
-                task.execute();
-                times = 1;
-            }
+            public void updateTaskStatus(AnalysisInfo info, AnalysisState jobState, String message, long time) {}
         };
 
-        Deencapsulation.invoke(analysisTaskExecutor, "doFetchAndExecute");
+        Deencapsulation.invoke(analysisTaskExecutor, "submitTask", task);
     }
 }

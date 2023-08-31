@@ -50,7 +50,8 @@ suite("test_ctas") {
     ) as select * from test_ctas;
     """
 
-        qt_select """SHOW CREATE TABLE `test_ctas1`"""
+        def res = sql """SHOW CREATE TABLE `test_ctas1`"""
+        assertTrue(res.size() != 0)
 
         qt_select """select count(*) from test_ctas1"""
 
@@ -63,7 +64,8 @@ suite("test_ctas") {
     ) as select test_varchar, lpad(test_text,10,'0') as test_text, test_datetime, test_default_timestamp from test_ctas;
     """
 
-        qt_select """SHOW CREATE TABLE `test_ctas2`"""
+        res = sql """SHOW CREATE TABLE `test_ctas2`"""
+        assertTrue(res.size() != 0)
 
         qt_select """select count(*) from test_ctas2"""
 
@@ -203,6 +205,39 @@ suite("test_ctas") {
             DROP TABLE IF EXISTS ctas_113815
         """
     }
+    
+    try {
+        sql '''create table a (
+                id int not null,
+                        name varchar(20) not null
+        )
+        distributed by hash(id) buckets 4
+        properties (
+                "replication_num"="1"
+        );
+        '''
 
+        sql '''create table b (
+                id int not null,
+                        age int not null
+        )
+        distributed by hash(id) buckets 4
+        properties (
+                "replication_num"="1"
+        );
+        '''
+
+        sql 'insert into a values(1, \'ww\'), (2, \'zs\');'
+        sql 'insert into b values(1, 22);'
+
+        sql 'create table c properties("replication_num"="1") as select a.id, a.name, b.age from a left join b on a.id = b.id;'
+        
+        String desc = sql 'desc c'
+        assertTrue(desc.contains('Yes'))
+    } finally {
+        sql 'drop table a'
+        sql 'drop table b'
+        sql 'drop table c'
+    }
 }
 

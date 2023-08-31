@@ -50,10 +50,12 @@
 #include "common/config.h"
 #include "common/daemon.h"
 #include "common/logging.h"
+#include "common/phdr_cache.h"
 #include "common/resource_tls.h"
 #include "common/signal_handler.h"
 #include "common/status.h"
 #include "io/cache/block/block_file_cache_factory.h"
+#include "io/fs/s3_file_write_bufferpool.h"
 #include "olap/options.h"
 #include "olap/storage_engine.h"
 #include "runtime/exec_env.h"
@@ -78,6 +80,7 @@ void __lsan_do_leak_check();
 }
 
 namespace doris {
+extern bool k_doris_run;
 extern bool k_doris_exit;
 
 static void thrift_output(const char* x) {
@@ -344,10 +347,6 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    if (doris::config::memory_mode == std::string("performance")) {
-        doris::MemTrackerLimiter::disable_oom_avoidance();
-    }
-
     std::vector<doris::StorePath> paths;
     auto olap_res = doris::parse_conf_store_paths(doris::config::storage_root_path, &paths);
     if (!olap_res) {
@@ -394,6 +393,7 @@ int main(int argc, char** argv) {
     }
 
     if (doris::config::enable_file_cache) {
+        doris::io::IFileCache::init();
         std::unordered_set<std::string> cache_path_set;
         std::vector<doris::CachePath> cache_paths;
         olap_res = doris::parse_conf_cache_paths(doris::config::file_cache_path, cache_paths);
@@ -402,20 +402,41 @@ int main(int argc, char** argv) {
                        << doris::config::file_cache_path;
             exit(-1);
         }
+
+        std::unique_ptr<doris::ThreadPool> file_cache_init_pool;
+        doris::ThreadPoolBuilder("FileCacheInitThreadPool")
+                .set_min_threads(cache_paths.size())
+                .set_max_threads(cache_paths.size())
+                .build(&file_cache_init_pool);
+
+        std::list<doris::Status> cache_status;
         for (auto& cache_path : cache_paths) {
             if (cache_path_set.find(cache_path.path) != cache_path_set.end()) {
                 LOG(WARNING) << fmt::format("cache path {} is duplicate", cache_path.path);
                 continue;
             }
+
+            RETURN_IF_ERROR(file_cache_init_pool->submit_func(
+                    std::bind(&doris::io::FileCacheFactory::create_file_cache,
+                              &(doris::io::FileCacheFactory::instance()), cache_path.path,
+                              cache_path.init_settings(), &(cache_status.emplace_back()))));
+
             cache_path_set.emplace(cache_path.path);
-            Status st = doris::io::FileCacheFactory::instance().create_file_cache(
-                    cache_path.path, cache_path.init_settings());
-            if (!st) {
-                LOG(FATAL) << st;
+        }
+
+        file_cache_init_pool->wait();
+        for (const auto& status : cache_status) {
+            if (!status.ok()) {
+                LOG(FATAL) << "failed to init file cache, err: " << status;
                 exit(-1);
             }
         }
     }
+
+    // PHDR speed up exception handling, but exceptions from dynamically loaded libraries (dlopen)
+    // will work only after additional call of this function.
+    // rewrites dl_iterate_phdr will cause Jemalloc to fail to run after enable profile. see #
+    // updatePHDRCache();
 
     // Load file cache before starting up daemon threads to make sure StorageEngine is read.
     doris::Daemon daemon;
@@ -431,6 +452,15 @@ int main(int argc, char** argv) {
     auto exec_env = doris::ExecEnv::GetInstance();
     doris::ExecEnv::init(exec_env, paths);
     doris::TabletSchemaCache::create_global_schema_cache();
+    doris::vectorized::init_date_day_offset_dict();
+
+    doris::k_doris_run = true;
+
+    // init s3 write buffer pool
+    doris::io::S3FileBufferPool* s3_buffer_pool = doris::io::S3FileBufferPool::GetInstance();
+    s3_buffer_pool->init(doris::config::s3_write_buffer_whole_size,
+                         doris::config::s3_write_buffer_size,
+                         exec_env->buffered_reader_prefetch_thread_pool());
 
     // init and open storage engine
     doris::EngineOptions options;

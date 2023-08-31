@@ -19,6 +19,7 @@ package org.apache.doris.task;
 
 import org.apache.doris.alter.SchemaChangeHandler;
 import org.apache.doris.analysis.DataSortInfo;
+import org.apache.doris.catalog.BinlogConfig;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.Index;
@@ -73,8 +74,6 @@ public class CreateReplicaTask extends AgentTask {
 
     private boolean isInMemory;
 
-    private boolean isDynamicSchema;
-
     private TTabletType tabletType;
 
     // used for synchronous process
@@ -102,7 +101,19 @@ public class CreateReplicaTask extends AgentTask {
 
     private boolean enableSingleReplicaCompaction;
 
+    private boolean skipWriteIndexOnLoad;
+
+    private String compactionPolicy;
+
+    private long timeSeriesCompactionGoalSizeMbytes;
+
+    private long timeSeriesCompactionFileCountThreshold;
+
+    private long timeSeriesCompactionTimeThresholdSeconds;
+
     private boolean storeRowColumn;
+
+    private BinlogConfig binlogConfig;
 
     public CreateReplicaTask(long backendId, long dbId, long tableId, long partitionId, long indexId, long tabletId,
                              long replicaId, short shortKeyColumnCount, int schemaHash, long version,
@@ -117,8 +128,13 @@ public class CreateReplicaTask extends AgentTask {
                              boolean enableUniqueKeyMergeOnWrite,
                              String storagePolicy, boolean disableAutoCompaction,
                              boolean enableSingleReplicaCompaction,
+                             boolean skipWriteIndexOnLoad,
+                             String compactionPolicy,
+                             long timeSeriesCompactionGoalSizeMbytes,
+                             long timeSeriesCompactionFileCountThreshold,
+                             long timeSeriesCompactionTimeThresholdSeconds,
                              boolean storeRowColumn,
-                             boolean isDynamicSchema) {
+                             BinlogConfig binlogConfig) {
         super(null, backendId, TTaskType.CREATE, dbId, tableId, partitionId, indexId, tabletId);
 
         this.replicaId = replicaId;
@@ -141,7 +157,6 @@ public class CreateReplicaTask extends AgentTask {
         this.latch = latch;
 
         this.isInMemory = isInMemory;
-        this.isDynamicSchema = isDynamicSchema;
         this.tabletType = tabletType;
         this.dataSortInfo = dataSortInfo;
         this.enableUniqueKeyMergeOnWrite = (keysType == KeysType.UNIQUE_KEYS && enableUniqueKeyMergeOnWrite);
@@ -154,7 +169,13 @@ public class CreateReplicaTask extends AgentTask {
         }
         this.disableAutoCompaction = disableAutoCompaction;
         this.enableSingleReplicaCompaction = enableSingleReplicaCompaction;
+        this.skipWriteIndexOnLoad = skipWriteIndexOnLoad;
+        this.compactionPolicy = compactionPolicy;
+        this.timeSeriesCompactionGoalSizeMbytes = timeSeriesCompactionGoalSizeMbytes;
+        this.timeSeriesCompactionFileCountThreshold = timeSeriesCompactionFileCountThreshold;
+        this.timeSeriesCompactionTimeThresholdSeconds = timeSeriesCompactionTimeThresholdSeconds;
         this.storeRowColumn = storeRowColumn;
+        this.binlogConfig = binlogConfig;
     }
 
     public void setIsRecoverTask(boolean isRecoverTask) {
@@ -260,8 +281,8 @@ public class CreateReplicaTask extends AgentTask {
         tSchema.setIsInMemory(isInMemory);
         tSchema.setDisableAutoCompaction(disableAutoCompaction);
         tSchema.setEnableSingleReplicaCompaction(enableSingleReplicaCompaction);
+        tSchema.setSkipWriteIndexOnLoad(skipWriteIndexOnLoad);
         tSchema.setStoreRowColumn(storeRowColumn);
-        tSchema.setIsDynamicSchema(isDynamicSchema);
         createTabletReq.setTabletSchema(tSchema);
 
         createTabletReq.setVersion(version);
@@ -289,6 +310,15 @@ public class CreateReplicaTask extends AgentTask {
         createTabletReq.setTabletType(tabletType);
         createTabletReq.setCompressionType(compressionType);
         createTabletReq.setEnableUniqueKeyMergeOnWrite(enableUniqueKeyMergeOnWrite);
+        createTabletReq.setCompactionPolicy(compactionPolicy);
+        createTabletReq.setTimeSeriesCompactionGoalSizeMbytes(timeSeriesCompactionGoalSizeMbytes);
+        createTabletReq.setTimeSeriesCompactionFileCountThreshold(timeSeriesCompactionFileCountThreshold);
+        createTabletReq.setTimeSeriesCompactionTimeThresholdSeconds(timeSeriesCompactionTimeThresholdSeconds);
+
+        if (binlogConfig != null) {
+            createTabletReq.setBinlogConfig(binlogConfig.toThrift());
+        }
+
         return createTabletReq;
     }
 }

@@ -27,7 +27,10 @@ import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.Resource;
 import org.apache.doris.common.DdlException;
 import org.apache.doris.common.FeConstants;
+import org.apache.doris.datasource.deltalake.DeltaLakeExternalCatalog;
 import org.apache.doris.datasource.iceberg.IcebergExternalCatalogFactory;
+import org.apache.doris.datasource.jdbc.JdbcExternalCatalog;
+import org.apache.doris.datasource.paimon.PaimonExternalCatalogFactory;
 import org.apache.doris.datasource.test.TestExternalCatalog;
 
 import com.google.common.base.Strings;
@@ -122,12 +125,15 @@ public class CatalogFactory {
             case "iceberg":
                 catalog = IcebergExternalCatalogFactory.createCatalog(catalogId, name, resource, props, comment);
                 break;
+            case "paimon":
+                catalog = PaimonExternalCatalogFactory.createCatalog(catalogId, name, resource, props, comment);
+                break;
             case "max_compute":
                 catalog = new MaxComputeExternalCatalog(catalogId, name, resource, props, comment);
                 break;
-            // case "hudi":
-            //     catalog = new HudiHMSExternalCatalog(catalogId, name, resource, props, comment);
-            //     break;
+            case "deltalake":
+                catalog = new DeltaLakeExternalCatalog(catalogId, name, resource, props, comment);
+                break;
             case "test":
                 if (!FeConstants.runningUnitTest) {
                     throw new DdlException("test catalog is only for FE unit test");
@@ -140,7 +146,15 @@ public class CatalogFactory {
         if (!isReplay) {
             // set some default properties when creating catalog.
             // do not call this method when replaying edit log. Because we need to keey the original properties.
-            catalog.setDefaultProps();
+            catalog.setDefaultPropsWhenCreating(isReplay);
+            // This will check if the customized access controller can be created successfully.
+            // If failed, it will throw exception and the catalog will not be created.
+            try {
+                catalog.initAccessController(true);
+            } catch (Exception e) {
+                LOG.warn("Failed to init access controller", e);
+                throw new DdlException("Failed to init access controller: " + e.getMessage());
+            }
         }
         return catalog;
     }

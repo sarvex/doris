@@ -87,16 +87,15 @@ Status VMatchPredicate::open(RuntimeState* state, VExprContext* context,
                              FunctionContext::FunctionStateScope scope) {
     RETURN_IF_ERROR(VExpr::open(state, context, scope));
     RETURN_IF_ERROR(VExpr::init_function_context(context, scope, _function));
-    if (scope == FunctionContext::THREAD_LOCAL) {
+    if (scope == FunctionContext::THREAD_LOCAL || scope == FunctionContext::FRAGMENT_LOCAL) {
         context->fn_context(_fn_context_index)->set_function_state(scope, _inverted_index_ctx);
     }
     return Status::OK();
 }
 
-void VMatchPredicate::close(RuntimeState* state, VExprContext* context,
-                            FunctionContext::FunctionStateScope scope) {
+void VMatchPredicate::close(VExprContext* context, FunctionContext::FunctionStateScope scope) {
     VExpr::close_function_context(context, scope, _function);
-    VExpr::close(state, context, scope);
+    VExpr::close(context, scope);
 }
 
 Status VMatchPredicate::execute(VExprContext* context, Block* block, int* result_column_id) {

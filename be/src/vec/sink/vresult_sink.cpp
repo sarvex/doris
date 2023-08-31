@@ -38,7 +38,6 @@
 #include "vec/exprs/vexpr.h"
 #include "vec/exprs/vexpr_context.h"
 #include "vec/sink/vmysql_result_writer.h"
-#include "vec/sink/vresult_writer.h"
 
 namespace doris {
 class QueryStatistics;
@@ -50,7 +49,7 @@ class Block;
 
 VResultSink::VResultSink(const RowDescriptor& row_desc, const std::vector<TExpr>& t_output_expr,
                          const TResultSink& sink, int buffer_size)
-        : _row_desc(row_desc), _t_output_expr(t_output_expr), _buf_size(buffer_size) {
+        : DataSink(row_desc), _t_output_expr(t_output_expr), _buf_size(buffer_size) {
     if (!sink.__isset.type || sink.type == TResultSinkType::MYSQL_PROTOCAL) {
         _sink_type = TResultSinkType::MYSQL_PROTOCAL;
     } else {
@@ -161,8 +160,6 @@ Status VResultSink::close(RuntimeState* state, Status exec_status) {
     state->exec_env()->result_mgr()->cancel_at_time(
             time(nullptr) + config::result_buffer_cancelled_interval_time,
             state->fragment_instance_id());
-
-    VExpr::close(_output_vexpr_ctxs, state);
     return DataSink::close(state, exec_status);
 }
 

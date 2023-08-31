@@ -131,6 +131,13 @@ enum ColumnFamilyIndex {
     META_COLUMN_FAMILY_INDEX,
 };
 
+enum class DataWriteType {
+    TYPE_DEFAULT = 0,
+    TYPE_DIRECT,
+    TYPE_SCHEMA_CHANGE,
+    TYPE_COMPACTION,
+};
+
 static const char* const HINIS_KEY_SEPARATOR = ";";
 static const char* const HINIS_KEY_PAIR_SEPARATOR = "|";
 static const char* const HINIS_KEY_GROUP_SEPARATOR = "&";
@@ -142,6 +149,7 @@ static const std::string END_ROWSET_ID = "end_rowset_id";
 static const std::string CONVERTED_FLAG = "true";
 static const std::string TABLET_CONVERT_FINISHED = "tablet_convert_finished";
 const std::string TABLET_ID_KEY = "tablet_id";
+const std::string TABLE_ID_KEY = "table_id";
 const std::string ENABLE_BYTE_TO_BASE64 = "byte_to_base64";
 const std::string TABLET_ID_PREFIX = "t_";
 const std::string ROWSET_ID_PREFIX = "s_";

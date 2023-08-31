@@ -52,7 +52,7 @@ public class WindowExpression extends Expression {
                 .add(function)
                 .addAll(partitionKeys)
                 .addAll(orderKeys)
-                .build().toArray(new Expression[0]));
+                .build());
         this.function = function;
         this.partitionKeys = ImmutableList.copyOf(partitionKeys);
         this.orderKeys = ImmutableList.copyOf(orderKeys);
@@ -67,7 +67,7 @@ public class WindowExpression extends Expression {
                 .addAll(partitionKeys)
                 .addAll(orderKeys)
                 .add(windowFrame)
-                .build().toArray(new Expression[0]));
+                .build());
         this.function = function;
         this.partitionKeys = ImmutableList.copyOf(partitionKeys);
         this.orderKeys = ImmutableList.copyOf(orderKeys);
@@ -108,9 +108,15 @@ public class WindowExpression extends Expression {
         return new WindowExpression(function, partitionKeys, orderKeys, windowFrame);
     }
 
-    public WindowExpression withOrderKeyList(List<OrderExpression> orderKeyList) {
-        return windowFrame.map(frame -> new WindowExpression(function, partitionKeys, orderKeyList, frame))
-                .orElseGet(() -> new WindowExpression(function, partitionKeys, orderKeyList));
+    public WindowExpression withOrderKeys(List<OrderExpression> orderKeys) {
+        return windowFrame.map(frame -> new WindowExpression(function, partitionKeys, orderKeys, frame))
+                .orElseGet(() -> new WindowExpression(function, partitionKeys, orderKeys));
+    }
+
+    public WindowExpression withPartitionKeysOrderKeys(
+            List<Expression> partitionKeys, List<OrderExpression> orderKeys) {
+        return windowFrame.map(frame -> new WindowExpression(function, partitionKeys, orderKeys, frame))
+                .orElseGet(() -> new WindowExpression(function, partitionKeys, orderKeys));
     }
 
     public WindowExpression withFunction(Expression function) {

@@ -31,13 +31,14 @@
 #include "util/slice.h"
 
 namespace doris {
+class ThreadPool;
 namespace io {
 
 // TODO(AlexYue): 1. support write into cache 2. unify write buffer and read buffer
 struct S3FileBuffer : public std::enable_shared_from_this<S3FileBuffer> {
     using Callback = std::function<void()>;
 
-    S3FileBuffer() = default;
+    S3FileBuffer(ThreadPool* pool) { _thread_pool = pool; }
     ~S3FileBuffer() = default;
 
     void rob_buffer(std::shared_ptr<S3FileBuffer>& other) {
@@ -49,8 +50,8 @@ struct S3FileBuffer : public std::enable_shared_from_this<S3FileBuffer> {
 
     void reserve_buffer(Slice s) { _buf = s; }
 
-    // apend data into the memory buffer inside or into the file cache
-    // if the buffer has no memory buffer
+    // append data into the memory buffer inside
+    // or into the file cache if the buffer has no memory buffer
     void append_data(const Slice& data);
     // upload to S3 and file cache in async threadpool
     void submit();
@@ -70,7 +71,7 @@ struct S3FileBuffer : public std::enable_shared_from_this<S3FileBuffer> {
     // get the size of the content already appendded
     size_t get_size() const { return _size; }
     // get the underlying stream containing
-    std::shared_ptr<std::iostream> get_stream() const { return _stream_ptr; }
+    const std::shared_ptr<std::iostream>& get_stream() const { return _stream_ptr; }
     // get file offset corresponding to the buffer
     size_t get_file_offset() const { return _offset; }
     // set the offset of the buffer
@@ -104,18 +105,25 @@ struct S3FileBuffer : public std::enable_shared_from_this<S3FileBuffer> {
     // caller of this buf could use this callback to do syncronization
     Callback _on_finish_upload = nullptr;
     Status _status;
-    size_t _offset;
-    size_t _size;
+    size_t _offset {0};
+    size_t _size {0};
     std::shared_ptr<std::iostream> _stream_ptr;
     // only served as one reserved buffer
     Slice _buf;
     size_t _append_offset {0};
+    // not owned
+    ThreadPool* _thread_pool = nullptr;
 };
 
 class S3FileBufferPool {
 public:
-    S3FileBufferPool();
+    S3FileBufferPool() = default;
     ~S3FileBufferPool() = default;
+
+    // should be called one and only once
+    // at startup
+    void init(int32_t s3_write_buffer_whole_size, int32_t s3_write_buffer_size,
+              doris::ThreadPool* thread_pool);
 
     static S3FileBufferPool* GetInstance() {
         static S3FileBufferPool _pool;
@@ -135,6 +143,8 @@ private:
     std::condition_variable _cv;
     std::unique_ptr<char[]> _whole_mem_buffer;
     std::list<Slice> _free_raw_buffers;
+    // not owned
+    ThreadPool* _thread_pool = nullptr;
 };
 } // namespace io
 } // namespace doris

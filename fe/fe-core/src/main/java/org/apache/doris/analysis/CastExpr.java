@@ -63,6 +63,8 @@ public class CastExpr extends Expr {
     // True if this cast does not change the type.
     private boolean noOp = false;
 
+    private boolean notFold = false;
+
     private static final Map<Pair<Type, Type>, Function.NullableMode> TYPE_NULLABLE_MODE;
 
     static {
@@ -273,7 +275,7 @@ public class CastExpr extends Expr {
         if (type.isArrayType()) {
             fn = ScalarFunction.createBuiltin(getFnName(Type.ARRAY),
                     type, Function.NullableMode.ALWAYS_NULLABLE,
-                    Lists.newArrayList(Type.VARCHAR), false,
+                    Lists.newArrayList(getActualArgTypes(collectChildReturnTypes())[0]), false,
                     "doris::CastFunctions::cast_to_array_val", null, null, true);
         } else if (type.isMapType()) {
             fn = ScalarFunction.createBuiltin(getFnName(Type.MAP),
@@ -312,7 +314,7 @@ public class CastExpr extends Expr {
         // it is necessary to check if it is castable before creating fn.
         // char type will fail in canCastTo, so for compatibility, only the cast of array type is checked here.
         if (type.isArrayType() || childType.isArrayType()) {
-            if (childType.isNull() || !Type.canCastTo(childType, type)) {
+            if (!Type.canCastTo(childType, type)) {
                 throw new AnalysisException("Invalid type cast of " + getChild(0).toSql()
                         + " from " + childType + " to " + type);
             }
@@ -444,8 +446,11 @@ public class CastExpr extends Expr {
             return new LargeIntLiteral(value.getStringValue());
         } else if (type.isDecimalV2() || type.isDecimalV3()) {
             if (targetTypeDef != null) {
-                return new DecimalLiteral(value.getStringValue(),
+                DecimalLiteral literal = new DecimalLiteral(value.getStringValue(),
                         ((ScalarType) targetTypeDef.getType()).getScalarScale());
+                literal.checkPrecisionAndScale(targetTypeDef.getType().getPrecision(),
+                        ((ScalarType) targetTypeDef.getType()).getScalarScale());
+                return literal;
             } else {
                 return new DecimalLiteral(value.getStringValue());
             }
@@ -581,6 +586,14 @@ public class CastExpr extends Expr {
     @Override
     public String getStringValueForArray() {
         return children.get(0).getStringValueForArray();
+    }
+
+    public void setNotFold(boolean notFold) {
+        this.notFold = notFold;
+    }
+
+    public boolean isNotFold() {
+        return this.notFold;
     }
 }
 

@@ -31,10 +31,13 @@
 
 #include "common/status.h"
 #include "exec/exec_node.h"
+#include "pipeline/pipeline_x/dependency.h"
 #include "runtime/memory/mem_tracker.h"
 #include "runtime/runtime_state.h"
 #include "util/runtime_profile.h"
 #include "vec/core/block.h"
+#include "vec/runtime/vdata_stream_recvr.h"
+#include "vec/sink/vresult_sink.h"
 
 namespace doris {
 class DataSink;
@@ -86,9 +89,16 @@ enum class SinkState : uint8_t {
 
 class OperatorBuilderBase;
 class OperatorBase;
+class OperatorXBase;
+class DataSinkOperatorX;
 
 using OperatorPtr = std::shared_ptr<OperatorBase>;
 using Operators = std::vector<OperatorPtr>;
+
+using OperatorXPtr = std::shared_ptr<OperatorXBase>;
+using OperatorXs = std::vector<OperatorXPtr>;
+
+using DataSinkOperatorXPtr = std::shared_ptr<DataSinkOperatorX>;
 
 using OperatorBuilderPtr = std::shared_ptr<OperatorBuilderBase>;
 using OperatorBuilders = std::vector<OperatorBuilderPtr>;
@@ -111,6 +121,7 @@ public:
     int32_t id() const { return _id; }
 
 protected:
+    // Exec node id.
     const int32_t _id;
     const std::string _name;
 
@@ -157,11 +168,11 @@ public:
     explicit OperatorBase(OperatorBuilderBase* operator_builder);
     virtual ~OperatorBase() = default;
 
-    std::string get_name() const { return _operator_builder->get_name(); }
+    virtual std::string get_name() const { return _operator_builder->get_name(); }
 
-    bool is_sink() const;
+    virtual bool is_sink() const;
 
-    bool is_source() const;
+    virtual bool is_source() const;
 
     virtual Status init(const TDataSink& tsink) { return Status::OK(); }
 
@@ -193,11 +204,18 @@ public:
         return Status::OK();
     }
 
+    virtual Status set_child(OperatorXPtr child) {
+        _child_x = std::move(child);
+        return Status::OK();
+    }
+
     virtual bool can_read() { return false; } // for source
 
     virtual bool runtime_filters_are_ready_or_timeout() { return true; } // for source
 
     virtual bool can_write() { return false; } // for sink
+
+    [[nodiscard]] virtual bool can_terminate_early() { return false; }
 
     /**
      * The main method to execute a pipeline task.
@@ -231,30 +249,27 @@ public:
      */
     virtual bool is_pending_finish() const { return false; }
 
-    virtual Status try_close() { return Status::OK(); }
+    virtual Status try_close(RuntimeState* state) { return Status::OK(); }
 
     bool is_closed() const { return _is_closed; }
 
-    MemTracker* mem_tracker() const { return _mem_tracker.get(); }
-
     const OperatorBuilderBase* operator_builder() const { return _operator_builder; }
 
-    const RowDescriptor& row_desc();
+    virtual const RowDescriptor& row_desc();
 
-    RuntimeProfile* runtime_profile() { return _runtime_profile.get(); }
     virtual std::string debug_string() const;
-    int32_t id() const { return _operator_builder->id(); }
+    virtual int32_t id() const { return _operator_builder->id(); }
+
+    [[nodiscard]] virtual RuntimeProfile* get_runtime_profile() const = 0;
 
 protected:
     OperatorBuilderBase* _operator_builder;
     OperatorPtr _child;
 
-    std::unique_ptr<RuntimeProfile> _runtime_profile;
-    std::unique_ptr<MemTracker> _mem_tracker;
-    // TODO pipeline Account for peak memory used by this operator
-    RuntimeProfile::Counter* _memory_used_counter = nullptr;
+    // Used on pipeline X
+    OperatorXPtr _child_x;
 
-    bool _is_closed = false;
+    bool _is_closed;
 };
 
 /**
@@ -273,20 +288,14 @@ public:
 
     ~DataSinkOperator() override = default;
 
-    Status prepare(RuntimeState* state) override {
-        _sink->profile()->insert_child_head(_runtime_profile.get(), true);
-        return Status::OK();
-    }
+    Status prepare(RuntimeState* state) override { return Status::OK(); }
 
-    Status open(RuntimeState* state) override {
-        SCOPED_TIMER(_runtime_profile->total_time_counter());
-        return _sink->open(state);
-    }
+    Status open(RuntimeState* state) override { return _sink->open(state); }
 
     Status sink(RuntimeState* state, vectorized::Block* in_block,
                 SourceState source_state) override {
-        if (in_block->rows() > 0) {
-            auto st = _sink->send(state, in_block, source_state == SourceState::FINISHED);
+        if (in_block->rows() > 0 || source_state == SourceState::FINISHED) {
+            auto st = _sink->sink(state, in_block, source_state == SourceState::FINISHED);
             // TODO: improvement: if sink returned END_OF_FILE, pipeline task can be finished
             if (st.template is<ErrorCode::END_OF_FILE>()) {
                 return Status::OK();
@@ -296,11 +305,16 @@ public:
         return Status::OK();
     }
 
+    Status try_close(RuntimeState* state) override {
+        return _sink->try_close(state, state->query_status());
+    }
+
+    [[nodiscard]] bool is_pending_finish() const override { return !_sink->is_close_done(); }
+
     Status close(RuntimeState* state) override {
         if (is_closed()) {
             return Status::OK();
         }
-        _fresh_exec_timer(_sink);
         RETURN_IF_ERROR(_sink->close(state, state->query_status()));
         _is_closed = true;
         return Status::OK();
@@ -308,12 +322,9 @@ public:
 
     Status finalize(RuntimeState* state) override { return Status::OK(); }
 
-protected:
-    void _fresh_exec_timer(NodeType* node) {
-        node->profile()->total_time_counter()->update(
-                _runtime_profile->total_time_counter()->value());
-    }
+    [[nodiscard]] RuntimeProfile* get_runtime_profile() const override { return _sink->profile(); }
 
+protected:
     NodeType* _sink;
 };
 
@@ -331,22 +342,21 @@ public:
 
     ~StreamingOperator() override = default;
 
+    [[nodiscard]] bool can_terminate_early() override { return _node->can_terminate_early(); }
+
     Status prepare(RuntimeState* state) override {
-        _node->runtime_profile()->insert_child_head(_runtime_profile.get(), true);
         _node->increase_ref();
         _use_projection = _node->has_output_row_descriptor();
         return Status::OK();
     }
 
     Status open(RuntimeState* state) override {
-        SCOPED_TIMER(_runtime_profile->total_time_counter());
         RETURN_IF_ERROR(_node->alloc_resource(state));
         return Status::OK();
     }
 
     Status sink(RuntimeState* state, vectorized::Block* in_block,
                 SourceState source_state) override {
-        SCOPED_TIMER(_runtime_profile->total_time_counter());
         return _node->sink(state, in_block, source_state == SourceState::FINISHED);
     }
 
@@ -354,7 +364,6 @@ public:
         if (is_closed()) {
             return Status::OK();
         }
-        _fresh_exec_timer(_node);
         if (!_node->decrease_ref()) {
             _node->release_resource(state);
         }
@@ -364,7 +373,6 @@ public:
 
     Status get_block(RuntimeState* state, vectorized::Block* block,
                      SourceState& source_state) override {
-        SCOPED_TIMER(_runtime_profile->total_time_counter());
         DCHECK(_child);
         auto input_block = _use_projection ? _node->get_clear_input_block() : block;
         RETURN_IF_ERROR(_child->get_block(state, input_block, source_state));
@@ -381,12 +389,11 @@ public:
 
     bool can_read() override { return _node->can_read(); }
 
-protected:
-    void _fresh_exec_timer(NodeType* node) {
-        node->runtime_profile()->total_time_counter()->update(
-                _runtime_profile->total_time_counter()->value());
+    [[nodiscard]] RuntimeProfile* get_runtime_profile() const override {
+        return _node->runtime_profile();
     }
 
+protected:
     NodeType* _node;
     bool _use_projection;
 };
@@ -404,7 +411,6 @@ public:
 
     Status get_block(RuntimeState* state, vectorized::Block* block,
                      SourceState& source_state) override {
-        SCOPED_TIMER(this->_runtime_profile->total_time_counter());
         auto& node = StreamingOperator<OperatorBuilderType>::_node;
         bool eos = false;
         RETURN_IF_ERROR(node->get_next_after_projects(
@@ -439,7 +445,6 @@ public:
 
     Status get_block(RuntimeState* state, vectorized::Block* block,
                      SourceState& source_state) override {
-        SCOPED_TIMER(this->_runtime_profile->total_time_counter());
         auto& node = StreamingOperator<OperatorBuilderType>::_node;
         auto& child = StreamingOperator<OperatorBuilderType>::_child;
 
@@ -451,7 +456,8 @@ public:
                 return Status::OK();
             }
             node->prepare_for_next();
-            node->push(state, _child_block.get(), _child_source_state == SourceState::FINISHED);
+            RETURN_IF_ERROR(node->push(state, _child_block.get(),
+                                       _child_source_state == SourceState::FINISHED));
         }
 
         if (!node->need_more_input_data()) {
@@ -474,6 +480,438 @@ public:
 protected:
     std::unique_ptr<vectorized::Block> _child_block;
     SourceState _child_source_state;
+};
+
+// This struct is used only for initializing local state.
+struct LocalStateInfo {
+    const std::vector<TScanRangeParams> scan_ranges;
+    Dependency* dependency;
+    std::shared_ptr<vectorized::VDataStreamRecvr> recvr;
+};
+
+// This struct is used only for initializing local sink state.
+struct LocalSinkStateInfo {
+    const int sender_id;
+    Dependency* dependency;
+    std::shared_ptr<BufferControlBlock> sender;
+};
+
+class PipelineXLocalStateBase {
+public:
+    PipelineXLocalStateBase(RuntimeState* state, OperatorXBase* parent)
+            : _num_rows_returned(0),
+              _rows_returned_counter(nullptr),
+              _rows_returned_rate(nullptr),
+              _memory_used_counter(nullptr),
+              _peak_memory_usage_counter(nullptr),
+              _parent(parent),
+              _state(state) {}
+    virtual ~PipelineXLocalStateBase() = default;
+
+    template <class TARGET>
+    TARGET& cast() {
+        return reinterpret_cast<TARGET&>(*this);
+    }
+    template <class TARGET>
+    const TARGET& cast() const {
+        return reinterpret_cast<const TARGET&>(*this);
+    }
+
+    virtual Status init(RuntimeState* state, LocalStateInfo& info) = 0;
+    virtual Status close(RuntimeState* state) = 0;
+
+    // If use projection, we should clear `_origin_block`.
+    void clear_origin_block();
+
+    bool reached_limit() const;
+    void reached_limit(vectorized::Block* block, bool* eos);
+    void reached_limit(vectorized::Block* block, SourceState& source_state);
+    RuntimeProfile* profile() { return _runtime_profile.get(); }
+
+    MemTracker* mem_tracker() { return _mem_tracker.get(); }
+    RuntimeProfile::Counter* rows_returned_counter() { return _rows_returned_counter; }
+    RuntimeProfile::Counter* rows_returned_rate() { return _rows_returned_rate; }
+    RuntimeProfile::Counter* memory_used_counter() { return _memory_used_counter; }
+    RuntimeProfile::Counter* projection_timer() { return _projection_timer; }
+
+    OperatorXBase* parent() { return _parent; }
+    RuntimeState* state() { return _state; }
+    vectorized::VExprContextSPtrs& conjuncts() { return _conjuncts; }
+    vectorized::VExprContextSPtrs& projections() { return _projections; }
+    int64_t num_rows_returned() const { return _num_rows_returned; }
+    void add_num_rows_returned(int64_t delta) { _num_rows_returned += delta; }
+    void set_num_rows_returned(int64_t value) { _num_rows_returned = value; }
+
+protected:
+    friend class OperatorXBase;
+
+    ObjectPool* _pool;
+    int64_t _num_rows_returned;
+
+    std::unique_ptr<RuntimeProfile> _runtime_profile;
+
+    // Record this node memory size. it is expected that artificial guarantees are accurate,
+    // which will providea reference for operator memory.
+    std::unique_ptr<MemTracker> _mem_tracker;
+
+    RuntimeProfile::Counter* _rows_returned_counter;
+    RuntimeProfile::Counter* _rows_returned_rate;
+    // Account for peak memory used by this node
+    RuntimeProfile::Counter* _memory_used_counter;
+    RuntimeProfile::Counter* _projection_timer;
+    // Account for peak memory used by this node
+    RuntimeProfile::Counter* _peak_memory_usage_counter;
+
+    OpentelemetrySpan _span;
+    OperatorXBase* _parent;
+    RuntimeState* _state;
+    vectorized::VExprContextSPtrs _conjuncts;
+    vectorized::VExprContextSPtrs _projections;
+    bool _closed = false;
+    vectorized::Block _origin_block;
+};
+
+class OperatorXBase : public OperatorBase {
+public:
+    OperatorXBase(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs)
+            : OperatorBase(nullptr),
+              _id(tnode.node_id),
+              _type(tnode.node_type),
+              _pool(pool),
+              _tuple_ids(tnode.row_tuples),
+              _row_descriptor(descs, tnode.row_tuples, tnode.nullable_tuples),
+              _resource_profile(tnode.resource_profile),
+              _limit(tnode.limit) {
+        if (tnode.__isset.output_tuple_id) {
+            _output_row_descriptor.reset(new RowDescriptor(descs, {tnode.output_tuple_id}, {true}));
+        }
+    }
+
+    virtual Status init(const TPlanNode& tnode, RuntimeState* state);
+    Status init(const TDataSink& tsink) override {
+        LOG(FATAL) << "should not reach here!";
+        return Status::OK();
+    }
+    [[nodiscard]] RuntimeProfile* get_runtime_profile() const override {
+        return _runtime_profile.get();
+    }
+    [[nodiscard]] std::string get_name() const override { return _op_name; }
+
+    virtual Status prepare(RuntimeState* state) override;
+
+    virtual Status open(RuntimeState* state) override;
+
+    Status finalize(RuntimeState* state) override { return Status::OK(); }
+
+    [[nodiscard]] bool can_terminate_early() override { return false; }
+
+    [[nodiscard]] virtual bool can_terminate_early(RuntimeState* state) { return false; }
+
+    bool can_read() override {
+        LOG(FATAL) << "should not reach here!";
+        return false;
+    }
+
+    bool can_write() override {
+        LOG(FATAL) << "should not reach here!";
+        return false;
+    }
+
+    bool is_pending_finish() const override {
+        LOG(FATAL) << "should not reach here!";
+        return false;
+    }
+
+    Status sink(RuntimeState* state, vectorized::Block* block, SourceState source_state) override {
+        LOG(FATAL) << "should not reach here!";
+        return Status::OK();
+    }
+
+    virtual Status close(RuntimeState* state) override;
+
+    virtual bool can_read(RuntimeState* state) { return true; }
+
+    virtual bool is_pending_finish(RuntimeState* state) const { return false; }
+
+    [[nodiscard]] virtual const RowDescriptor& intermediate_row_desc() const {
+        return _row_descriptor;
+    }
+
+    virtual std::string debug_string() const override;
+
+    virtual Status setup_local_state(RuntimeState* state, LocalStateInfo& info) = 0;
+
+    template <class TARGET>
+    TARGET& cast() {
+        DCHECK(dynamic_cast<TARGET*>(this));
+        return reinterpret_cast<TARGET&>(*this);
+    }
+    template <class TARGET>
+    const TARGET& cast() const {
+        DCHECK(dynamic_cast<const TARGET*>(this));
+        return reinterpret_cast<const TARGET&>(*this);
+    }
+
+    [[nodiscard]] OperatorXPtr get_child() { return _child_x; }
+
+    [[nodiscard]] vectorized::VExprContextSPtrs& conjuncts() { return _conjuncts; }
+    [[nodiscard]] RowDescriptor& row_descriptor() { return _row_descriptor; }
+
+    [[nodiscard]] int id() const override { return _id; }
+
+    [[nodiscard]] int64_t limit() const { return _limit; }
+
+    [[nodiscard]] virtual const RowDescriptor& row_desc() override {
+        return _output_row_descriptor ? *_output_row_descriptor : _row_descriptor;
+    }
+
+    [[nodiscard]] virtual bool is_source() const override { return false; }
+    [[nodiscard]] virtual bool need_to_create_exch_recv() const { return false; }
+
+    Status get_next_after_projects(RuntimeState* state, vectorized::Block* block,
+                                   SourceState& source_state);
+
+    /// Only use in vectorized exec engine try to do projections to trans _row_desc -> _output_row_desc
+    Status do_projections(RuntimeState* state, vectorized::Block* origin_block,
+                          vectorized::Block* output_block);
+
+protected:
+    template <typename Dependency>
+    friend class PipelineXLocalState;
+    friend class PipelineXLocalStateBase;
+    int _id; // unique w/in single plan tree
+    TPlanNodeType::type _type;
+    ObjectPool* _pool;
+    std::vector<TupleId> _tuple_ids;
+
+    vectorized::VExprContextSPtrs _conjuncts;
+
+    RowDescriptor _row_descriptor;
+
+    std::unique_ptr<RowDescriptor> _output_row_descriptor;
+    vectorized::VExprContextSPtrs _projections;
+
+    /// Resource information sent from the frontend.
+    const TBackendResourceProfile _resource_profile;
+
+    int64_t _limit; // -1: no limit
+    std::unique_ptr<RuntimeProfile> _runtime_profile;
+
+private:
+    void _init_runtime_profile();
+
+    std::string _op_name;
+};
+
+template <typename DependencyType = FakeDependency>
+class PipelineXLocalState : public PipelineXLocalStateBase {
+public:
+    PipelineXLocalState(RuntimeState* state, OperatorXBase* parent)
+            : PipelineXLocalStateBase(state, parent) {}
+    virtual ~PipelineXLocalState() {}
+
+    virtual Status init(RuntimeState* state, LocalStateInfo& info) override {
+        _dependency = (DependencyType*)info.dependency;
+        if (_dependency) {
+            _shared_state = (typename DependencyType::SharedState*)_dependency->shared_state();
+        }
+        _runtime_profile.reset(new RuntimeProfile("LocalState " + _parent->get_name()));
+        _parent->get_runtime_profile()->add_child(_runtime_profile.get(), true, nullptr);
+        _conjuncts.resize(_parent->_conjuncts.size());
+        _projections.resize(_parent->_projections.size());
+        for (size_t i = 0; i < _conjuncts.size(); i++) {
+            RETURN_IF_ERROR(_parent->_conjuncts[i]->clone(state, _conjuncts[i]));
+        }
+        for (size_t i = 0; i < _projections.size(); i++) {
+            RETURN_IF_ERROR(_parent->_projections[i]->clone(state, _projections[i]));
+        }
+        DCHECK(_runtime_profile.get() != nullptr);
+        _rows_returned_counter = ADD_COUNTER(_runtime_profile, "RowsReturned", TUnit::UNIT);
+        _projection_timer = ADD_TIMER(_runtime_profile, "ProjectionTime");
+        _rows_returned_rate = profile()->add_derived_counter(
+                doris::ExecNode::ROW_THROUGHPUT_COUNTER, TUnit::UNIT_PER_SECOND,
+                std::bind<int64_t>(&RuntimeProfile::units_per_second, _rows_returned_counter,
+                                   profile()->total_time_counter()),
+                "");
+        _mem_tracker =
+                std::make_unique<MemTracker>("PipelineXLocalState:" + _runtime_profile->name());
+        _memory_used_counter = ADD_LABEL_COUNTER(_runtime_profile, "MemoryUsage");
+        _peak_memory_usage_counter = _runtime_profile->AddHighWaterMarkCounter(
+                "PeakMemoryUsage", TUnit::BYTES, "MemoryUsage");
+        return Status::OK();
+    }
+    virtual Status close(RuntimeState* state) override {
+        if (_closed) {
+            return Status::OK();
+        }
+        if (_rows_returned_counter != nullptr) {
+            COUNTER_SET(_rows_returned_counter, _num_rows_returned);
+        }
+        profile()->add_to_span(_span);
+        _closed = true;
+        return Status::OK();
+    }
+
+protected:
+    DependencyType* _dependency;
+    typename DependencyType::SharedState* _shared_state;
+};
+
+class DataSinkOperatorX;
+
+class PipelineXSinkLocalStateBase {
+public:
+    PipelineXSinkLocalStateBase(DataSinkOperatorX* parent_, RuntimeState* state_)
+            : _parent(parent_), _state(state_) {}
+    virtual ~PipelineXSinkLocalStateBase() {}
+
+    virtual Status init(RuntimeState* state, LocalSinkStateInfo& info) = 0;
+    virtual Status close(RuntimeState* state) = 0;
+    template <class TARGET>
+    TARGET& cast() {
+        DCHECK(dynamic_cast<TARGET*>(this));
+        return reinterpret_cast<TARGET&>(*this);
+    }
+    template <class TARGET>
+    const TARGET& cast() const {
+        DCHECK(dynamic_cast<const TARGET*>(this));
+        return reinterpret_cast<const TARGET&>(*this);
+    }
+
+    DataSinkOperatorX* parent() { return _parent; }
+    RuntimeState* state() { return _state; }
+    RuntimeProfile* profile() { return _profile; }
+    MemTracker* mem_tracker() { return _mem_tracker.get(); }
+    QueryStatistics* query_statistics() { return _query_statistics.get(); }
+    RuntimeProfile* faker_runtime_profile() const { return _faker_runtime_profile.get(); }
+
+protected:
+    DataSinkOperatorX* _parent;
+    RuntimeState* _state;
+    RuntimeProfile* _profile;
+    std::unique_ptr<MemTracker> _mem_tracker;
+    // Maybe this will be transferred to BufferControlBlock.
+    std::shared_ptr<QueryStatistics> _query_statistics;
+    // Set to true after close() has been called. subclasses should check and set this in
+    // close().
+    bool _closed = false;
+    //NOTICE: now add a faker profile, because sometimes the profile record is useless
+    //so we want remove some counters and timers, eg: in join node, if it's broadcast_join
+    //and shared hash table, some counter/timer about build hash table is useless,
+    //so we could add those counter/timer in faker profile, and those will not display in web profile.
+    std::unique_ptr<RuntimeProfile> _faker_runtime_profile =
+            std::make_unique<RuntimeProfile>("faker profile");
+};
+
+class DataSinkOperatorX : public OperatorBase {
+public:
+    DataSinkOperatorX(const int id) : OperatorBase(nullptr), _id(id) {}
+
+    ~DataSinkOperatorX() override = default;
+
+    // For agg/sort/join sink.
+    virtual Status init(const TPlanNode& tnode, RuntimeState* state);
+
+    virtual Status init(const TDataSink& tsink) override { return Status::OK(); }
+
+    virtual Status setup_local_state(RuntimeState* state, LocalSinkStateInfo& info) = 0;
+
+    [[nodiscard]] virtual bool need_to_create_result_sender() const { return false; }
+
+    template <class TARGET>
+    TARGET& cast() {
+        DCHECK(dynamic_cast<TARGET*>(this));
+        return reinterpret_cast<TARGET&>(*this);
+    }
+    template <class TARGET>
+    const TARGET& cast() const {
+        DCHECK(dynamic_cast<const TARGET*>(this));
+        return reinterpret_cast<const TARGET&>(*this);
+    }
+
+    virtual void get_dependency(DependencySPtr& dependency) {
+        dependency.reset((Dependency*)nullptr);
+    }
+
+    virtual Status close(RuntimeState* state) override {
+        return state->get_sink_local_state(id())->close(state);
+    }
+
+    bool can_read() override {
+        LOG(FATAL) << "should not reach here!";
+        return false;
+    }
+
+    bool can_write() override {
+        LOG(FATAL) << "should not reach here!";
+        return false;
+    }
+
+    bool is_pending_finish() const override {
+        LOG(FATAL) << "should not reach here!";
+        return false;
+    }
+
+    virtual bool can_write(RuntimeState* state) { return false; }
+
+    virtual bool is_pending_finish(RuntimeState* state) const { return false; }
+
+    virtual std::string debug_string() const override;
+
+    bool is_sink() const override { return true; }
+
+    bool is_source() const override { return false; }
+
+    virtual Status close(RuntimeState* state, Status exec_status) { return Status::OK(); }
+
+    [[nodiscard]] RuntimeProfile* get_runtime_profile() const override { return _profile; }
+
+    [[nodiscard]] int id() const override { return _id; }
+
+    [[nodiscard]] std::string get_name() const override { return _name; }
+
+    Status finalize(RuntimeState* state) override { return Status::OK(); }
+
+protected:
+    const int _id;
+    std::string _name;
+
+    // Maybe this will be transferred to BufferControlBlock.
+    std::shared_ptr<QueryStatistics> _query_statistics;
+
+    OpentelemetrySpan _span {};
+
+    RuntimeProfile* _profile = nullptr;
+};
+
+template <typename DependencyType = FakeDependency>
+class PipelineXSinkLocalState : public PipelineXSinkLocalStateBase {
+public:
+    PipelineXSinkLocalState(DataSinkOperatorX* parent, RuntimeState* state)
+            : PipelineXSinkLocalStateBase(parent, state) {}
+    virtual ~PipelineXSinkLocalState() {}
+
+    virtual Status init(RuntimeState* state, LocalSinkStateInfo& info) override {
+        _dependency = (DependencyType*)info.dependency;
+        if (_dependency) {
+            _shared_state = (typename DependencyType::SharedState*)_dependency->shared_state();
+        }
+        // create profile
+        _profile = state->obj_pool()->add(new RuntimeProfile(_parent->get_name()));
+        _mem_tracker = std::make_unique<MemTracker>(_parent->get_name());
+        return Status::OK();
+    }
+    virtual Status close(RuntimeState* state) override {
+        if (_closed) {
+            return Status::OK();
+        }
+        _closed = true;
+        return Status::OK();
+    }
+
+protected:
+    DependencyType* _dependency;
+    typename DependencyType::SharedState* _shared_state;
 };
 
 } // namespace doris::pipeline

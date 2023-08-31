@@ -167,9 +167,9 @@ Status VAnalyticEvalNode::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(ExecNode::prepare(state));
     DCHECK(child(0)->row_desc().is_prefix_of(_row_descriptor));
 
-    auto* memory_usage = runtime_profile()->create_child("PeakMemoryUsage", true, true);
-    runtime_profile()->add_child(memory_usage, false, nullptr);
-    _blocks_memory_usage = memory_usage->AddHighWaterMarkCounter("Blocks", TUnit::BYTES);
+    _memory_usage_counter = ADD_LABEL_COUNTER(runtime_profile(), "MemoryUsage");
+    _blocks_memory_usage =
+            runtime_profile()->AddHighWaterMarkCounter("Blocks", TUnit::BYTES, "MemoryUsage");
     _evaluation_timer = ADD_TIMER(runtime_profile(), "EvaluationTime");
     SCOPED_TIMER(_evaluation_timer);
 
@@ -292,12 +292,6 @@ Status VAnalyticEvalNode::pull(doris::RuntimeState* /*state*/, vectorized::Block
 void VAnalyticEvalNode::release_resource(RuntimeState* state) {
     if (is_closed()) {
         return;
-    }
-
-    VExpr::close(_partition_by_eq_expr_ctxs, state);
-    VExpr::close(_order_by_eq_expr_ctxs, state);
-    for (size_t i = 0; i < _agg_functions_size; ++i) {
-        VExpr::close(_agg_expr_ctxs[i], state);
     }
     for (auto* agg_function : _agg_functions) {
         agg_function->close(state);
@@ -493,7 +487,7 @@ BlockRowPos VAnalyticEvalNode::_compare_row_to_find_end(int idx, BlockRowPos sta
     }
     //binary search, set start and end pos
     int64_t start_pos = start_init_row_num;
-    int64_t end_pos = _input_blocks[start.block_num].rows() - 1;
+    int64_t end_pos = _input_blocks[start.block_num].rows();
     //if end_block_num haven't moved, only start_block_num go to the end block
     //so could use the end.row_num for binary search
     if (start.block_num == end.block_num) {

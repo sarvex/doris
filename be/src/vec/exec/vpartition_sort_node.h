@@ -26,12 +26,14 @@
 #include "exec/exec_node.h"
 #include "vec/columns/column.h"
 #include "vec/common/columns_hashing.h"
+#include "vec/common/hash_table/fixed_hash_map.h"
 #include "vec/common/hash_table/hash.h"
 #include "vec/common/hash_table/ph_hash_map.h"
 #include "vec/common/hash_table/string_hash_map.h"
 #include "vec/common/sort/partition_sorter.h"
 #include "vec/common/sort/vsort_exec_exprs.h"
 #include "vec/core/block.h"
+#include "vec/exec/vaggregation_node.h"
 
 namespace doris {
 namespace vectorized {
@@ -83,8 +85,13 @@ public:
 using PartitionDataPtr = PartitionBlocks*;
 using PartitionDataWithStringKey = PHHashMap<StringRef, PartitionDataPtr, DefaultHash<StringRef>>;
 using PartitionDataWithShortStringKey = StringHashMap<PartitionDataPtr>;
+using PartitionDataWithUInt8Key =
+        FixedImplicitZeroHashMapWithCalculatedSize<UInt8, PartitionDataPtr>;
+using PartitionDataWithUInt16Key = FixedImplicitZeroHashMap<UInt16, PartitionDataPtr>;
 using PartitionDataWithUInt32Key = PHHashMap<UInt32, PartitionDataPtr, HashCRC32<UInt32>>;
-
+using PartitionDataWithUInt64Key = PHHashMap<UInt64, PartitionDataPtr, HashCRC32<UInt64>>;
+using PartitionDataWithUInt128Key = PHHashMap<UInt128, PartitionDataPtr, HashCRC32<UInt128>>;
+using PartitionDataWithUInt256Key = PHHashMap<UInt256, PartitionDataPtr, HashCRC32<UInt256>>;
 template <typename TData>
 struct PartitionMethodSerialized {
     using Data = TData;
@@ -97,12 +104,18 @@ struct PartitionMethodSerialized {
     bool inited = false;
     std::vector<StringRef> keys;
     size_t keys_memory_usage = 0;
-    PartitionMethodSerialized() : _serialized_key_buffer_size(0), _serialized_key_buffer(nullptr) {}
+    PartitionMethodSerialized() : _serialized_key_buffer_size(0), _serialized_key_buffer(nullptr) {
+        _arena.reset(new Arena());
+        _serialize_key_arena.reset(new Arena());
+    }
 
     using State = ColumnsHashing::HashMethodSerialized<typename Data::value_type, Mapped, true>;
 
     template <typename Other>
-    explicit PartitionMethodSerialized(const Other& other) : data(other.data) {}
+    explicit PartitionMethodSerialized(const Other& other) : data(other.data) {
+        _arena.reset(new Arena());
+        _serialize_key_arena.reset(new Arena());
+    }
 
     size_t serialize_keys(const ColumnRawPtrs& key_columns, size_t num_rows) {
         if (keys.size() < num_rows) {
@@ -115,20 +128,20 @@ struct PartitionMethodSerialized {
         }
         size_t total_bytes = max_one_row_byte_size * num_rows;
 
-        if (total_bytes > SERIALIZE_KEYS_MEM_LIMIT_IN_BYTES) {
+        if (total_bytes > config::pre_serialize_keys_limit_bytes) {
             // reach mem limit, don't serialize in batch
             // for simplicity, we just create a new arena here.
-            _arena.reset(new Arena());
+            _arena->clear();
             size_t keys_size = key_columns.size();
             for (size_t i = 0; i < num_rows; ++i) {
                 keys[i] = serialize_keys_to_pool_contiguous(i, keys_size, key_columns, *_arena);
             }
             keys_memory_usage = _arena->size();
         } else {
-            _arena.reset();
+            _arena->clear();
             if (total_bytes > _serialized_key_buffer_size) {
                 _serialized_key_buffer_size = total_bytes;
-                _serialize_key_arena.reset(new Arena());
+                _serialize_key_arena->clear();
                 _serialized_key_buffer = reinterpret_cast<uint8_t*>(
                         _serialize_key_arena->alloc(_serialized_key_buffer_size));
             }
@@ -152,7 +165,6 @@ private:
     uint8_t* _serialized_key_buffer;
     std::unique_ptr<Arena> _serialize_key_arena;
     std::unique_ptr<Arena> _arena;
-    static constexpr size_t SERIALIZE_KEYS_MEM_LIMIT_IN_BYTES = 16 * 1024 * 1024; // 16M
 };
 
 //for string
@@ -181,7 +193,7 @@ struct PartitionMethodStringNoCache {
 
 /// For the case where there is one numeric key.
 /// FieldType is UInt8/16/32/64 for any type with corresponding bit width.
-template <typename FieldType, typename TData, bool consecutive_keys_optimization = false>
+template <typename FieldType, typename TData>
 struct PartitionMethodOneNumber {
     using Data = TData;
     using Key = typename Data::key_type;
@@ -199,7 +211,7 @@ struct PartitionMethodOneNumber {
 
     /// To use one `Method` in different threads, use different `State`.
     using State = ColumnsHashing::HashMethodOneNumber<typename Data::value_type, Mapped, FieldType,
-                                                      consecutive_keys_optimization>;
+                                                      false>;
 };
 
 template <typename Base>
@@ -247,66 +259,116 @@ struct PartitionMethodSingleNullableColumn : public SingleColumnMethod {
     using State = ColumnsHashing::HashMethodSingleLowNullableColumn<BaseState, Mapped, true>;
 };
 
+template <typename TData, bool has_nullable_keys_ = false>
+struct PartitionMethodKeysFixed {
+    using Data = TData;
+    using Key = typename Data::key_type;
+    using Mapped = typename Data::mapped_type;
+    using Iterator = typename Data::iterator;
+    static constexpr bool has_nullable_keys = has_nullable_keys_;
+
+    Data data;
+    Iterator iterator;
+    PartitionMethodKeysFixed() = default;
+
+    template <typename Other>
+    PartitionMethodKeysFixed(const Other& other) : data(other.data) {}
+
+    using State = ColumnsHashing::HashMethodKeysFixed<typename Data::value_type, Key, Mapped,
+                                                      has_nullable_keys, false>;
+};
+
 using PartitionedMethodVariants =
         std::variant<PartitionMethodSerialized<PartitionDataWithStringKey>,
+                     PartitionMethodOneNumber<UInt8, PartitionDataWithUInt8Key>,
+                     PartitionMethodOneNumber<UInt16, PartitionDataWithUInt16Key>,
                      PartitionMethodOneNumber<UInt32, PartitionDataWithUInt32Key>,
+                     PartitionMethodOneNumber<UInt64, PartitionDataWithUInt64Key>,
+                     PartitionMethodOneNumber<UInt128, PartitionDataWithUInt128Key>,
+                     PartitionMethodSingleNullableColumn<PartitionMethodOneNumber<
+                             UInt8, PartitionDataWithNullKey<PartitionDataWithUInt8Key>>>,
+                     PartitionMethodSingleNullableColumn<PartitionMethodOneNumber<
+                             UInt16, PartitionDataWithNullKey<PartitionDataWithUInt16Key>>>,
                      PartitionMethodSingleNullableColumn<PartitionMethodOneNumber<
                              UInt32, PartitionDataWithNullKey<PartitionDataWithUInt32Key>>>,
+                     PartitionMethodSingleNullableColumn<PartitionMethodOneNumber<
+                             UInt64, PartitionDataWithNullKey<PartitionDataWithUInt64Key>>>,
+                     PartitionMethodSingleNullableColumn<PartitionMethodOneNumber<
+                             UInt128, PartitionDataWithNullKey<PartitionDataWithUInt128Key>>>,
+                     PartitionMethodKeysFixed<PartitionDataWithUInt64Key, false>,
+                     PartitionMethodKeysFixed<PartitionDataWithUInt64Key, true>,
+                     PartitionMethodKeysFixed<PartitionDataWithUInt128Key, false>,
+                     PartitionMethodKeysFixed<PartitionDataWithUInt128Key, true>,
+                     PartitionMethodKeysFixed<PartitionDataWithUInt256Key, false>,
+                     PartitionMethodKeysFixed<PartitionDataWithUInt256Key, true>,
                      PartitionMethodStringNoCache<PartitionDataWithShortStringKey>,
                      PartitionMethodSingleNullableColumn<PartitionMethodStringNoCache<
                              PartitionDataWithNullKey<PartitionDataWithShortStringKey>>>>;
 
-struct PartitionedHashMapVariants {
-    PartitionedHashMapVariants() = default;
-    PartitionedHashMapVariants(const PartitionedHashMapVariants&) = delete;
-    PartitionedHashMapVariants& operator=(const PartitionedHashMapVariants&) = delete;
-    PartitionedMethodVariants _partition_method_variant;
-
-    enum class Type {
-        EMPTY = 0,
-        serialized,
-        int8_key,
-        int16_key,
-        int32_key,
-        int64_key,
-        int128_key,
-        int64_keys,
-        int128_keys,
-        int256_keys,
-        string_key,
-    };
-
-    Type _type = Type::EMPTY;
-
-    void init(Type type, bool is_nullable = false) {
+struct PartitionedHashMapVariants
+        : public DataVariants<PartitionedMethodVariants, PartitionMethodSingleNullableColumn,
+                              PartitionMethodOneNumber, PartitionMethodKeysFixed,
+                              PartitionDataWithNullKey> {
+    template <bool nullable>
+    void init(Type type) {
         _type = type;
         switch (_type) {
-        case Type::serialized:
-            _partition_method_variant
-                    .emplace<PartitionMethodSerialized<PartitionDataWithStringKey>>();
+        case Type::serialized: {
+            method_variant.emplace<PartitionMethodSerialized<PartitionDataWithStringKey>>();
             break;
-        case Type::int32_key:
-            if (is_nullable) {
-                _partition_method_variant
-                        .emplace<PartitionMethodSingleNullableColumn<PartitionMethodOneNumber<
-                                UInt32, PartitionDataWithNullKey<PartitionDataWithUInt32Key>>>>();
-            } else {
-                _partition_method_variant
-                        .emplace<PartitionMethodOneNumber<UInt32, PartitionDataWithUInt32Key>>();
-            }
+        }
+        case Type::int8_key: {
+            emplace_single<UInt8, PartitionDataWithUInt8Key, nullable>();
             break;
-        case Type::string_key:
-            if (is_nullable) {
-                _partition_method_variant
+        }
+        case Type::int16_key: {
+            emplace_single<UInt16, PartitionDataWithUInt16Key, nullable>();
+            break;
+        }
+        case Type::int32_key: {
+            emplace_single<UInt32, PartitionDataWithUInt32Key, nullable>();
+            break;
+        }
+        case Type::int64_key: {
+            emplace_single<UInt64, PartitionDataWithUInt64Key, nullable>();
+            break;
+        }
+        case Type::int128_key: {
+            emplace_single<UInt128, PartitionDataWithUInt128Key, nullable>();
+            break;
+        }
+        case Type::int64_keys: {
+            emplace_fixed<PartitionDataWithUInt64Key, nullable>();
+            break;
+        }
+        case Type::int128_keys: {
+            emplace_fixed<PartitionDataWithUInt128Key, nullable>();
+            break;
+        }
+        case Type::int256_keys: {
+            emplace_fixed<PartitionDataWithUInt256Key, nullable>();
+            break;
+        }
+        case Type::string_key: {
+            if (nullable) {
+                method_variant
                         .emplace<PartitionMethodSingleNullableColumn<PartitionMethodStringNoCache<
                                 PartitionDataWithNullKey<PartitionDataWithShortStringKey>>>>();
             } else {
-                _partition_method_variant
+                method_variant
                         .emplace<PartitionMethodStringNoCache<PartitionDataWithShortStringKey>>();
             }
             break;
+        }
         default:
-            DCHECK(false) << "Do not have a rigth partition by data type";
+            throw Exception(ErrorCode::INTERNAL_ERROR, "meet invalid key type, type={}", type);
+        }
+    }
+    void init(Type type, bool is_nullable = false) {
+        if (is_nullable) {
+            init<true>(type);
+        } else {
+            init<false>(type);
         }
     }
 };

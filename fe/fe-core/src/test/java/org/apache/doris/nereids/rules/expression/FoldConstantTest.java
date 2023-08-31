@@ -39,7 +39,7 @@ import org.apache.doris.nereids.trees.expressions.literal.IntegerLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.Interval.TimeUnit;
 import org.apache.doris.nereids.trees.expressions.literal.Literal;
 import org.apache.doris.nereids.trees.expressions.literal.VarcharLiteral;
-import org.apache.doris.nereids.trees.plans.ObjectId;
+import org.apache.doris.nereids.trees.plans.RelationId;
 import org.apache.doris.nereids.types.DateTimeV2Type;
 import org.apache.doris.nereids.types.DoubleType;
 import org.apache.doris.nereids.types.IntegerType;
@@ -229,7 +229,9 @@ public class FoldConstantTest extends ExpressionRewriteTestHelper {
 
         interval = "date '1991-05-01' + interval 10 / 2 + 1 day";
         e7 = process((TimestampArithmetic) PARSER.parseExpression(interval));
-        e8 = new DateLiteral(1991, 5, 7);
+        e8 = Config.enable_date_conversion
+                ? new DateV2Literal(1991, 5, 7)
+                : new DateLiteral(1991, 5, 7);
         assertRewrite(e7, e8);
 
         interval = "interval '1' day + '1991-05-01'";
@@ -484,6 +486,13 @@ public class FoldConstantTest extends ExpressionRewriteTestHelper {
         Assertions.assertEquals(DateTimeExtractAndTransform.toDays(dateLiteral).toSql(), answer[answerIdx++]);
         Assertions.assertEquals(DateTimeExtractAndTransform.date(dateLiteral).toSql(), answer[answerIdx++]);
         Assertions.assertEquals(DateTimeExtractAndTransform.dateV2(dateLiteral).toSql(), answer[answerIdx]);
+
+        Assertions.assertEquals("'2021 52 2022 01'", DateTimeExtractAndTransform.dateFormat(
+                new DateLiteral("2022-01-01 00:12:42"),
+                new VarcharLiteral("%x %v %X %V")).toSql());
+        Assertions.assertEquals("'2023 18 2023 19'", DateTimeExtractAndTransform.dateFormat(
+                new DateLiteral("2023-05-07 02:41:42"),
+                new VarcharLiteral("%x %v %X %V")).toSql());
     }
 
     @Test
@@ -598,7 +607,7 @@ public class FoldConstantTest extends ExpressionRewriteTestHelper {
     public void testFoldTypeOfNullLiteral() {
         String actualExpression = "append_trailing_char_if_absent(cast(version() as varchar), cast(null as varchar))";
         ExpressionRewriteContext context = new ExpressionRewriteContext(
-                MemoTestUtils.createCascadesContext(new UnboundRelation(new ObjectId(1), ImmutableList.of("test_table"))));
+                MemoTestUtils.createCascadesContext(new UnboundRelation(new RelationId(1), ImmutableList.of("test_table"))));
         NereidsParser parser = new NereidsParser();
         Expression e1 = parser.parseExpression(actualExpression);
         e1 = new ExpressionNormalization().rewrite(FunctionBinder.INSTANCE.rewrite(e1, context), context);
@@ -607,7 +616,7 @@ public class FoldConstantTest extends ExpressionRewriteTestHelper {
 
     private void assertRewriteExpression(String actualExpression, String expectedExpression) {
         ExpressionRewriteContext context = new ExpressionRewriteContext(
-                MemoTestUtils.createCascadesContext(new UnboundRelation(new ObjectId(1), ImmutableList.of("test_table"))));
+                MemoTestUtils.createCascadesContext(new UnboundRelation(new RelationId(1), ImmutableList.of("test_table"))));
 
         NereidsParser parser = new NereidsParser();
         Expression e1 = parser.parseExpression(actualExpression);

@@ -19,6 +19,7 @@ package org.apache.doris.nereids.trees.expressions.literal;
 
 import org.apache.doris.analysis.LiteralExpr;
 import org.apache.doris.catalog.Type;
+import org.apache.doris.common.Config;
 import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.exceptions.UnboundException;
 import org.apache.doris.nereids.trees.expressions.Expression;
@@ -32,6 +33,8 @@ import org.apache.doris.nereids.types.DecimalV3Type;
 import org.apache.doris.nereids.types.LargeIntType;
 import org.apache.doris.nereids.types.StringType;
 import org.apache.doris.nereids.types.VarcharType;
+
+import com.google.common.collect.ImmutableList;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -52,6 +55,7 @@ public abstract class Literal extends Expression implements LeafExpression, Comp
      * @param dataType logical data type in Nereids
      */
     public Literal(DataType dataType) {
+        super(ImmutableList.of());
         this.dataType = Objects.requireNonNull(dataType);
     }
 
@@ -75,6 +79,12 @@ public abstract class Literal extends Expression implements LeafExpression, Comp
             return new FloatLiteral((Float) value);
         } else if (value instanceof Double) {
             return new DoubleLiteral((Double) value);
+        } else if (value instanceof BigDecimal) {
+            if (Config.enable_decimal_conversion) {
+                return new DecimalV3Literal((BigDecimal) value);
+            } else {
+                return new DecimalLiteral((BigDecimal) value);
+            }
         } else if (value instanceof Boolean) {
             return BooleanLiteral.of((Boolean) value);
         } else if (value instanceof String) {

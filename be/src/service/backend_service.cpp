@@ -384,65 +384,64 @@ void BackendService::check_storage_format(TCheckStorageFormatResult& result) {
 
 void BackendService::ingest_binlog(TIngestBinlogResult& result,
                                    const TIngestBinlogRequest& request) {
+    constexpr uint64_t kMaxTimeoutMs = 1000;
     TStatus tstatus;
     Defer defer {[&result, &tstatus]() { result.__set_status(tstatus); }};
 
-    if (!config::enable_feature_binlog) {
-        LOG(WARNING) << "enable feature binlog is false";
-        tstatus.__set_status_code(TStatusCode::NOT_IMPLEMENTED_ERROR);
+    auto set_tstatus = [&tstatus](TStatusCode::type code, std::string error_msg) {
+        tstatus.__set_status_code(code);
         tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("enable feature binlog is false");
+        tstatus.error_msgs.push_back(std::move(error_msg));
+    };
+
+    if (!config::enable_feature_binlog) {
+        auto error_msg = "enable feature binlog is false";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::RUNTIME_ERROR, error_msg);
         return;
     }
 
     /// Check args: txn_id, remote_tablet_id, binlog_version, remote_host, remote_port, partition_id, load_id
-    if (request.__isset.txn_id) {
-        LOG(WARNING) << "txn_id is empty";
-        tstatus.__set_status_code(TStatusCode::ANALYSIS_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("txn_id is empty");
+    if (!request.__isset.txn_id) {
+        auto error_msg = "txn_id is empty";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::ANALYSIS_ERROR, error_msg);
         return;
     }
-    if (request.__isset.remote_tablet_id) {
-        LOG(WARNING) << "remote_tablet_id is empty";
-        tstatus.__set_status_code(TStatusCode::ANALYSIS_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("remote_tablet_id is empty");
+    if (!request.__isset.remote_tablet_id) {
+        auto error_msg = "remote_tablet_id is empty";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::ANALYSIS_ERROR, error_msg);
         return;
     }
-    if (request.__isset.binlog_version) {
-        LOG(WARNING) << "binlog_version is empty";
-        tstatus.__set_status_code(TStatusCode::ANALYSIS_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("binlog_version is empty");
+    if (!request.__isset.binlog_version) {
+        auto error_msg = "binlog_version is empty";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::ANALYSIS_ERROR, error_msg);
         return;
     }
-    if (request.__isset.remote_host) {
-        LOG(WARNING) << "remote_host is empty";
-        tstatus.__set_status_code(TStatusCode::ANALYSIS_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("remote_host is empty");
+    if (!request.__isset.remote_host) {
+        auto error_msg = "remote_host is empty";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::ANALYSIS_ERROR, error_msg);
         return;
     }
-    if (request.__isset.remote_port) {
-        LOG(WARNING) << "remote_port is empty";
-        tstatus.__set_status_code(TStatusCode::ANALYSIS_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("remote_port is empty");
+    if (!request.__isset.remote_port) {
+        auto error_msg = "remote_port is empty";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::ANALYSIS_ERROR, error_msg);
         return;
     }
-    if (request.__isset.partition_id) {
-        LOG(WARNING) << "partition_id is empty";
-        tstatus.__set_status_code(TStatusCode::ANALYSIS_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("partition_id is empty");
+    if (!request.__isset.partition_id) {
+        auto error_msg = "partition_id is empty";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::ANALYSIS_ERROR, error_msg);
         return;
     }
-    if (request.__isset.load_id) {
-        LOG(WARNING) << "load_id is empty";
-        tstatus.__set_status_code(TStatusCode::ANALYSIS_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back("load_id is empty");
+    if (!request.__isset.load_id) {
+        auto error_msg = "load_id is empty";
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::ANALYSIS_ERROR, error_msg);
         return;
     }
 
@@ -451,10 +450,9 @@ void BackendService::ingest_binlog(TIngestBinlogResult& result,
     auto const& local_tablet_id = request.local_tablet_id;
     auto local_tablet = StorageEngine::instance()->tablet_manager()->get_tablet(local_tablet_id);
     if (local_tablet == nullptr) {
-        LOG(WARNING) << "tablet " << local_tablet_id << " not found";
-        tstatus.__set_status_code(TStatusCode::RUNTIME_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.error_msgs.emplace_back(fmt::format("tablet {} not found", local_tablet_id));
+        auto error_msg = fmt::format("tablet {} not found", local_tablet_id);
+        LOG(WARNING) << error_msg;
+        set_tstatus(TStatusCode::TABLET_MISSING, std::move(error_msg));
         return;
     }
 
@@ -485,7 +483,7 @@ void BackendService::ingest_binlog(TIngestBinlogResult& result,
     std::string binlog_info;
     auto get_binlog_info_cb = [&get_binlog_info_url, &binlog_info](HttpClient* client) {
         RETURN_IF_ERROR(client->init(get_binlog_info_url));
-        client->set_timeout_ms(10); // 10ms
+        client->set_timeout_ms(kMaxTimeoutMs);
         return client->execute(&binlog_info);
     };
     status = HttpClient::execute_with_retry(max_retry, 1, get_binlog_info_cb);
@@ -509,7 +507,7 @@ void BackendService::ingest_binlog(TIngestBinlogResult& result,
     std::string rowset_meta_str;
     auto get_rowset_meta_cb = [&get_rowset_meta_url, &rowset_meta_str](HttpClient* client) {
         RETURN_IF_ERROR(client->init(get_rowset_meta_url));
-        client->set_timeout_ms(10); // 10ms
+        client->set_timeout_ms(kMaxTimeoutMs);
         return client->execute(&rowset_meta_str);
     };
     status = HttpClient::execute_with_retry(max_retry, 1, get_rowset_meta_cb);
@@ -526,14 +524,12 @@ void BackendService::ingest_binlog(TIngestBinlogResult& result,
         status.to_thrift(&tstatus);
         return;
     }
-    LOG(INFO) << "remote rowset meta pb: " << rowset_meta_pb.ShortDebugString();
     // rewrite rowset meta
     rowset_meta_pb.set_tablet_id(local_tablet_id);
-    rowset_meta_pb.set_partition_id(local_tablet->tablet_meta()->partition_id());
+    rowset_meta_pb.set_partition_id(partition_id);
     rowset_meta_pb.set_tablet_schema_hash(local_tablet->tablet_meta()->schema_hash());
     rowset_meta_pb.set_txn_id(txn_id);
     rowset_meta_pb.set_rowset_state(RowsetStatePB::COMMITTED);
-    LOG(INFO) << "local rowset meta pb: " << rowset_meta_pb.ShortDebugString();
     auto rowset_meta = std::make_shared<RowsetMeta>();
     if (!rowset_meta->init_from_pb(rowset_meta_pb)) {
         LOG(WARNING) << "failed to init rowset meta from " << get_rowset_meta_url;
@@ -558,7 +554,7 @@ void BackendService::ingest_binlog(TIngestBinlogResult& result,
         auto get_segment_file_size_cb = [&get_segment_file_size_url,
                                          &segment_file_size](HttpClient* client) {
             RETURN_IF_ERROR(client->init(get_segment_file_size_url));
-            client->set_timeout_ms(10); // 10ms
+            client->set_timeout_ms(kMaxTimeoutMs);
             RETURN_IF_ERROR(client->head());
             return client->get_content_length(&segment_file_size);
         };
@@ -602,7 +598,7 @@ void BackendService::ingest_binlog(TIngestBinlogResult& result,
         auto get_segment_file_cb = [&get_segment_file_url, &local_segment_path, segment_file_size,
                                     estimate_timeout](HttpClient* client) {
             RETURN_IF_ERROR(client->init(get_segment_file_url));
-            client->set_timeout_ms(estimate_timeout * 1000); // 10ms
+            client->set_timeout_ms(estimate_timeout * 1000);
             RETURN_IF_ERROR(client->download(local_segment_path));
 
             std::error_code ec;
@@ -652,15 +648,16 @@ void BackendService::ingest_binlog(TIngestBinlogResult& result,
     // Step 6.2: commit txn
     Status commit_txn_status = StorageEngine::instance()->txn_manager()->commit_txn(
             local_tablet->data_dir()->get_meta(), rowset_meta->partition_id(),
-            rowset_meta->txn_id(), rowset_meta->tablet_id(), rowset_meta->tablet_schema_hash(),
-            local_tablet->tablet_uid(), rowset_meta->load_id(), rowset, true);
+            rowset_meta->txn_id(), rowset_meta->tablet_id(), local_tablet->tablet_uid(),
+            rowset_meta->load_id(), rowset, true);
     if (!commit_txn_status && !commit_txn_status.is<ErrorCode::PUSH_TRANSACTION_ALREADY_EXIST>()) {
-        LOG(WARNING) << "failed to add committed rowset for slave replica. rowset_id="
-                     << rowset_meta->rowset_id() << ", tablet_id=" << rowset_meta->tablet_id()
-                     << ", txn_id=" << rowset_meta->txn_id();
-        tstatus.__set_status_code(TStatusCode::RUNTIME_ERROR);
-        tstatus.__isset.error_msgs = true;
-        tstatus.__set_error_msgs({commit_txn_status.to_string()});
+        auto err_msg = fmt::format(
+                "failed to commit txn for remote tablet. rowset_id: {}, remote_tablet_id={}, "
+                "txn_id={}, status={}",
+                rowset_meta->rowset_id().to_string(), rowset_meta->tablet_id(),
+                rowset_meta->txn_id(), commit_txn_status.to_string());
+        LOG(WARNING) << err_msg;
+        set_tstatus(TStatusCode::RUNTIME_ERROR, std::move(err_msg));
         return;
     }
 

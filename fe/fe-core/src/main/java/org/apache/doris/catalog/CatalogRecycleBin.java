@@ -167,7 +167,7 @@ public class CatalogRecycleBin extends MasterDaemon implements Writable {
         return true;
     }
 
-    public synchronized boolean recyclePartition(long dbId, long tableId, Partition partition,
+    public synchronized boolean recyclePartition(long dbId, long tableId, String tableName, Partition partition,
                                                  Range<PartitionKey> range, PartitionItem listPartitionItem,
                                                  DataProperty dataProperty, ReplicaAllocation replicaAlloc,
                                                  boolean isInMemory, boolean isMutable) {
@@ -181,7 +181,8 @@ public class CatalogRecycleBin extends MasterDaemon implements Writable {
                 range, listPartitionItem, dataProperty, replicaAlloc, isInMemory, isMutable);
         idToRecycleTime.put(partition.getId(), System.currentTimeMillis());
         idToPartition.put(partition.getId(), partitionInfo);
-        LOG.info("recycle partition[{}-{}]", partition.getId(), partition.getName());
+        LOG.info("recycle partition[{}-{}] of table [{}-{}]", partition.getId(), partition.getName(),
+                tableId, tableName);
         return true;
     }
 
@@ -697,7 +698,10 @@ public class CatalogRecycleBin extends MasterDaemon implements Writable {
                 RecoverInfo recoverInfo = new RecoverInfo(db.getId(), table.getId(), -1L, "", newTableName, "");
                 Env.getCurrentEnv().getEditLog().logRecoverTable(recoverInfo);
             }
-            DynamicPartitionUtil.registerOrRemoveDynamicPartitionTable(db.getId(), (OlapTable) table, isReplay);
+            // Only olap table need recover dynamic partition, other table like jdbc odbc view.. do not need it
+            if (table.getType() == TableType.OLAP) {
+                DynamicPartitionUtil.registerOrRemoveDynamicPartitionTable(db.getId(), (OlapTable) table, isReplay);
+            }
         } finally {
             table.writeUnlock();
         }

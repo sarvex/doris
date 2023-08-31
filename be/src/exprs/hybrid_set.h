@@ -43,7 +43,7 @@ public:
 
     class Iterator;
 
-    FixedContainer() : _size(0) { static_assert(N >= 1 && N <= FIXED_CONTAINER_MAX_SIZE); }
+    FixedContainer() : _size(0) { static_assert(N >= 0 && N <= FIXED_CONTAINER_MAX_SIZE); }
 
     ~FixedContainer() = default;
 
@@ -61,6 +61,9 @@ public:
 
     // Use '|' instead of '||' has better performance by test.
     ALWAYS_INLINE bool find(const T& value) const {
+        if constexpr (N == 0) {
+            return false;
+        }
         if constexpr (N == 1) {
             return (value == _data[0]);
         }
@@ -222,6 +225,9 @@ public:
         LOG(FATAL) << "HybridSetBase not support find_batch_nullable_negative";
     }
 
+    void set_filter_id(int filter_id) { _filter_id = filter_id; }
+    int get_filter_id() const { return _filter_id; }
+    int _filter_id = -1;
     class IteratorBase {
     public:
         IteratorBase() = default;
@@ -255,8 +261,8 @@ bool check_hybrid_set(const HybridSetBase* column) {
 }
 
 template <PrimitiveType T,
-          typename _ContainerType = DynamicContainer<typename VecPrimitiveTypeTraits<T>::CppType>,
-          typename _ColumnType = typename VecPrimitiveTypeTraits<T>::ColumnType>
+          typename _ContainerType = DynamicContainer<typename PrimitiveTypeTraits<T>::CppType>,
+          typename _ColumnType = typename PrimitiveTypeTraits<T>::ColumnType>
 class HybridSet : public HybridSetBase {
 public:
     using ContainerType = _ContainerType;
