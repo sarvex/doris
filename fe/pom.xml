@@ -276,7 +276,7 @@ under the License.
         <delta.version>3.0.0rc1</delta.version>
         <maxcompute.version>0.43.3-public</maxcompute.version>
         <arrow.version>9.0.0</arrow.version>
-        <avro.version>1.11.1</avro.version>
+        <avro.version>1.11.3</avro.version>
         <!-- hudi -->
         <hudi.version>0.13.1</hudi.version>
         <presto.hadoop.version>2.7.4-11</presto.hadoop.version>
